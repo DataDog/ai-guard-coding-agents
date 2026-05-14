@@ -561,11 +561,11 @@ class TestHandleHookToolUse:
         assert last["role"] == "assistant"
         assert last["tool_calls"][0]["function"]["name"] == "Bash"
 
-    async def test_pre_tool_use_injects_skill_markdown_into_last_message(
+    async def test_pre_tool_use_injects_skill_markdown_as_tool_message(
         self, tracer_recorder, tmp_home: Path, fake_ai_guard
     ) -> None:
         """When the pending tool call is a Skill invocation, the SKILL.md body
-        is appended to the last message's content so AI Guard evaluates it."""
+        is appended as a tool-role message so AI Guard evaluates it."""
         skill_dir = tmp_home / ".claude" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# my-skill body")
@@ -595,10 +595,9 @@ class TestHandleHookToolUse:
         assert out == b""
         messages, _ = fake_ai_guard.calls[0]
         last = messages[-1]
-        assert any(
-            isinstance(part, dict) and "my-skill body" in part.get("text", "")
-            for part in last["content"]
-        )
+        assert last["role"] == "tool"
+        assert last["tool_call_id"] == "tu1"
+        assert "my-skill body" in last["content"]
 
     async def test_pre_tool_use_returns_deny_payload_when_ai_guard_aborts(
         self, tracer_recorder, tmp_home: Path, fake_ai_guard

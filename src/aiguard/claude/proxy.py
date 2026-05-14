@@ -126,16 +126,16 @@ class ClaudeProxy(ProxyHandler):
     async def _pre_tool_use(self, event: dict[str, Any]) -> dict[str, Any] | None:
         tags = _set_common_tags(event)
         session_id = tags[AIGuardConstants.SESSION_ID_TAG]
-        # The proxy already persisted the assistant's tool_use; load it as evaluation context.
         messages = load_messages(self.agent(), session_id)
         tool_name = event.get("tool_name", "")
-        if tool_name == "Skill" and messages:
+        if tool_name == "Skill":
             # inject the skill content to validate if it can be safely loaded
-            tool = messages[-1]
             skill = _fetch_skill(event)
             if skill:
-                tool["content"] = _append_content_part(
-                    tool.get("content", ""), ContentPart(type="text", text=skill[1])
+                messages.append(
+                    Message(
+                        role="tool", tool_call_id=event.get("tool_use_id", ""), content=skill[1]
+                    )
                 )
         try:
             await self._evaluate_messages(messages, tags)
