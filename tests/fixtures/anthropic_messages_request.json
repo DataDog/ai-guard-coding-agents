@@ -1,0 +1,25 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "stream": false,
+  "system": "You are a helpful assistant.",
+  "metadata": {
+    "user_id": "{\"session_id\":\"sess-abc\",\"account_uuid\":\"acct-xyz\"}"
+  },
+  "messages": [
+    {"role": "user", "content": "Hello!"},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Hi there. How can I help?"}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Read the README please."},
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "README contents..."}
+      ]
+    }
+  ]
+}

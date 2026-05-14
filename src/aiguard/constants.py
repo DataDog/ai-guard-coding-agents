@@ -1,0 +1,22 @@
+class AIGuardConstants(object):
+    # tags
+    SESSION_ID_TAG = "ai_guard.usr.session_id"
+    USER_ID_TAG = "ai_guard.usr.id"
+    SUBAGENT_ID_TAG = "ai_guard.subagent.id"
+    SUBAGENT_TYPE_TAG = "ai_guard.subagent.type"
+    CODING_AGENT_TAG = "ai_guard.coding_agent"
+    MODEL_TAG = "ai_guard.model"
+
+    # resources
+    HOOK_RESOURCE = "ai_guard_hook"
+
+    # operation names
+    SESSION_START = "session-start"
+    SESSION_END = "session-end"
+    SUBAGENT_START = "subagent-start"
+    SUBAGENT_STOP = "subagent-stop"
+    PRE_TOOL = "pre-tool"
+    POST_TOOL = "post-tool"
+
+    # CODING AGENTS
+    CLAUDE_CODE = "claude_code"
