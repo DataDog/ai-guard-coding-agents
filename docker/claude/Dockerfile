@@ -69,7 +69,7 @@ COPY docker/claude/claude-settings.json /home/claude/.claude/settings.json
 
 # ── Fix permissions ───────────────────────────────────────────────────────────
 RUN chmod 755 /entrypoint.sh \
-    && chown claude:claude /home/claude/.claude/settings.json
+    && chown -R claude:claude /home/claude/.claude
 
 USER claude
 ENV HOME=/home/claude \
