@@ -58,6 +58,21 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs=22.22.2-1nodesource1 \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Demo deps ───────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python-is-python3=3.11.2-1+deb12u1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── GitHub CLI ─────────────────────────────────────────────────────
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh=2.92.0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Non-root user ─────────────────────────────────────────────────────────────
 RUN groupadd -g 1000 claude && useradd -l -m -s /bin/bash -u 1000 -g 1000 claude
 

@@ -38,6 +38,22 @@ else
     cp /etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.pem
 fi
 
+# Demo repo: cloned on first start. /home/claude is a named volume that hides
+# any image-time clone, so we do it here instead. HTTPS_PROXY points at the
+# mitmproxy sidecar, which may not be reachable yet — wait for it first.
+_repo_dir="/home/claude/claude-code-attack-vectors-poc"
+if [ ! -d "$_repo_dir/.git" ]; then
+    if [ -n "$HTTPS_PROXY" ]; then
+        _hp="${HTTPS_PROXY#*://}"
+        _hp="${_hp%%/*}"
+        wait_for_port "${_hp%:*}" "${_hp##*:}"
+        unset _hp
+    fi
+    rm -rf "$_repo_dir"
+    git clone https://github.com/manuel-alvarez-alvarez/claude-code-attack-vectors-poc.git "$_repo_dir"
+fi
+unset _repo_dir
+
 # Run the proxy and the user command as siblings. Running the agent against a
 # dead proxy would silently bypass AI Guard, so an unexpected proxy exit is
 # fatal; on the normal path the app's exit code is propagated.
