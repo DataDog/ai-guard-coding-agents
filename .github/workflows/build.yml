@@ -1,0 +1,63 @@
+name: Build native executables
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.arch }})
+    needs: test
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.test.outputs.platforms) }}
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      # ddtrace is pinned to a git source whose tests/ tree includes paths
+      # > 260 chars; without longpaths Windows checkout fails mid-clone.
+      - name: Enable git long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[build]"
+
+      - name: Build executable
+        run: pyinstaller ai-guard.spec
+
+      - name: Rename artifact (Unix)
+        if: runner.os != 'Windows'
+        run: mv dist/ai-guard dist/${{ matrix.artifact }}
+
+      - name: Rename artifact (Windows)
+        if: runner.os == 'Windows'
+        run: mv dist/ai-guard.exe dist/${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
