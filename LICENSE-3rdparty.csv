@@ -1,0 +1,9 @@
+Component,Origin,License,Copyright
+aiohttp,https://github.com/aio-libs/aiohttp,Apache-2.0,Copyright aio-libs contributors
+click,https://github.com/pallets/click,BSD-3-Clause,Copyright Pallets
+hatchling,https://github.com/pypa/hatch,MIT,Copyright (c) Ofek Lev
+pyinstaller,https://github.com/pyinstaller/pyinstaller,GPL-2.0-or-later WITH PyInstaller-Exception,Copyright (c) PyInstaller Development Team
+pytest,https://github.com/pytest-dev/pytest,MIT,"Copyright (c) Holger Krekel, Bruno Oliveira and others"
+pytest-asyncio,https://github.com/pytest-dev/pytest-asyncio,Apache-2.0,Copyright (c) Tin Tvrtković
+pytest-cov,https://github.com/pytest-dev/pytest-cov,MIT,Copyright (c) Marc Schlaich and contributors
+ruff,https://github.com/astral-sh/ruff,MIT,Copyright (c) Astral Software Inc.

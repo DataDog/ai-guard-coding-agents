@@ -1,31 +1,16 @@
 # AI Guard for Coding Agents
 
-Real-time security guardrails for AI coding agents, powered by [Datadog AI Guard](https://docs.datadoghq.com/security/ai_guard/).
+![Claude Code](https://img.shields.io/badge/Claude_Code-ready-success?style=flat-square&logo=anthropic&logoColor=white)
+![Codex CLI](https://img.shields.io/badge/Codex_CLI-roadmap-lightgrey?style=flat-square&logo=https%3A%2F%2Fraw.githubusercontent.com%2FDataDog%2Fai-guard-coding-agents%2Fmain%2Fdocs%2Fimages%2Fopenai.svg)
+![Cursor](https://img.shields.io/badge/Cursor-roadmap-lightgrey?style=flat-square&logo=cursor&logoColor=white)
 
-When an AI coding agent like Claude Code reads a file, runs a command, or loads a skill or plugin, that content can carry a prompt-injection payload, an instruction to exfiltrate secrets, or other hostile behaviour. AI Guard for Coding Agents watches the session as it happens and blocks dangerous activity before it runs.
+A CLI that runs AI coding agent actions through [Datadog AI Guard](https://docs.datadoghq.com/security/ai_guard/) before they are executed.
 
-## What it protects against
+When a coding agent reads a file, runs a command, or loads a skill or plugin, that content can carry malicious intent: prompt-injection payloads, instructions to exfiltrate secrets, attempts to install hostile tools, and similar. This CLI hooks into the agent's lifecycle, evaluates each tool call against AI Guard, and denies the operation when policy is violated.
 
-- **Prompt injection** smuggled into files, web pages, or tool outputs the agent reads.
-- **Secret exfiltration** — credentials, tokens, and customer data being sent to attacker-controlled destinations.
-- **Malicious skills** and plugins that try to load themselves into the agent's session.
-- **Unsafe shell or file operations** the model has been tricked into running.
+Denied tool calls provide a useful remediation to the user so they can clearly see what steps are required to fix the issue. Setting `DD_AI_GUARD_BLOCK=false` switches to observe-only: evaluations are still emitted, but no decision is enforced. Every evaluation (allow or deny) is emitted to Datadog with the session, tool, model, and risk category attached.
 
-Every decision is logged to Datadog so your security team has a full audit trail of what the agent tried to do, what was blocked, and why.
-
-## How your developers experience it
-
-- The agent works the way it always has — no new commands to learn, no extra prompts to remember.
-- When something risky comes through, the agent sees a clear block message and explains it back to the user in plain English, including the most likely risk category and a recommended next step.
-- Sessions that aren't risky are never interrupted.
-
-## Supported agents
-
-| Agent            | Status         |
-|------------------|----------------|
-| Claude Code      | Available      |
-| OpenAI Codex CLI | On the roadmap |
-| Cursor           | On the roadmap |
+<img src="docs/images/demo.gif" alt="AI Guard for Coding Agents demo" width="680">
 
 ## Installation
 
@@ -35,26 +20,24 @@ Every decision is logged to Datadog so your security team has a full audit trail
 
 Environment settings to configure:
 
-| Setting                    | What it does                                                                                                                       |
-|----------------------------|------------------------------------------------------------------------------------------------------------------------------------|
-| `DD_API_KEY`, `DD_APP_KEY` | Your Datadog credentials. Required.                                                                                                |
-| `DD_SERVICE`, `DD_ENV`     | How this deployment appears in Datadog.                                                                                            |
-| `DD_AI_GUARD_BLOCK`        | `true` to block on policy violations, `false` to observe only — events still ship to Datadog but the agent is never interrupted.   |
+| Setting             | What it does                                                                      |
+|---------------------|-----------------------------------------------------------------------------------|
+| `DD_API_KEY`        | Datadog API key. Required.                                                        |
+| `DD_APP_KEY`        | Datadog application key. Required.                                                |
+| `DD_SERVICE`        | Service tag attached to every emitted span.                                       |
+| `DD_ENV`            | Environment tag attached to every emitted span.                                   |
+| `DD_AI_GUARD_BLOCK` | `true` to block on policy violations, `false` to observe only.                    |
 
-## Viewing decisions in Datadog
+## Contributing
 
-Every AI Guard evaluation (allowed or blocked) is sent to your Datadog account. You can:
-
-- Browse the timeline of each coding session.
-- See which tool calls were flagged and what the risk category was.
-- Investigate trends across your team or your CI fleet.
-
-See the [Datadog AI Guard documentation](https://docs.datadoghq.com/security/ai_guard/) for screenshots and dashboards.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and the PR workflow. For an in-depth tour of the codebase, see [AGENTS.md](AGENTS.md).
 
 ## Support
 
-Questions, feature requests, or a suspected bug? Please open an issue on this repository or reach out to your Datadog account team.
+For questions, feature requests, or bug reports, open an issue on this repository.
+
+For security issues, follow the responsible-disclosure process at <https://www.datadoghq.com/security/>. Do not open a public GitHub issue.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party components bundled into the released binary are tracked in [LICENSE-3rdparty.csv](LICENSE-3rdparty.csv).
