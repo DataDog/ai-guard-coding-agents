@@ -41,7 +41,12 @@ ai-guard-hooks/
 │   └── build.yml                   # Tagged release build (calls test.yml first)
 ├── docker-compose.yml              # mitmproxy + claude services for local testing
 ├── ai-guard.spec                   # PyInstaller spec — single-file binary
-└── pyproject.toml                  # uv project metadata, optional `test`/`build` extras
+├── pyproject.toml                  # uv project metadata, optional `test`/`build` extras
+├── .github/{PULL_REQUEST_TEMPLATE,ISSUE_TEMPLATE/*}.md  # OSS templates
+├── CONTRIBUTING.md                 # PR workflow, dev setup, header convention
+├── LICENSE                         # Apache 2.0
+├── LICENSE-3rdparty.csv            # Direct deps tracked for OSS compliance
+└── NOTICE                          # Apache 2.0 attribution
 ```
 
 ## Key entry points
@@ -51,7 +56,7 @@ ai-guard-hooks/
 | `ai-guard proxy` | `proxy/server.py:proxy` | Start the long-running aiohttp proxy. Each registered handler declares its own upstream (`ClaudeProxy.upstream()`); requests are routed to handlers via `matches()`, hook events via the `ai-guard-cli` UA. Flags: `--host` (`DD_AI_GUARD_PROXY_HOST`, default `127.0.0.1`), `--port` (`DD_AI_GUARD_PROXY_PORT`, default `29279`), `--anthropic-upstream` (`DD_AI_GUARD_ANTHROPIC_UPSTREAM`, default `https://api.anthropic.com`), `--block/--no-block` (`DD_AI_GUARD_BLOCK`). |
 | `ai-guard hook <AGENT> <HOOK>` | `hooks/hooks.py:hook` | One-shot CLI: read stdin, POST to `<PROXY_URL>/hook/<agent>/<hook>` with `User-Agent: ai-guard-cli/<version>`, write reply to stdout. Flag: `--proxy-url` (`DD_AI_GUARD_PROXY_URL`, default `http://127.0.0.1:29279`). **Always exits 0** so a failed hook never breaks the host agent's command flow. |
 
-The CLI is registered in `src/aiguard/cli.py` via `main.add_command(proxy)` and `main.add_command(hooks)` (where `hooks` is re-exported from `aiguard.hooks`).
+The CLI is registered in `src/aiguard/cli.py` via `main.add_command(proxy)` and `main.add_command(hook)` (the `hook` Click command is imported from `aiguard.hooks.hooks`).
 
 ## How a hook flows end-to-end
 
@@ -154,7 +159,8 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 - All hook handler methods are `async`, return `dict | None`, and are decorated with `@tracer.wrap`. Inside, set tags via `tracer.current_span()`, not by manually opening a span.
 - Storage is the **source of truth** for conversation history during a session; the proxy persists, the hooks load. Don't keep parallel in-memory copies.
 - Logging goes to `~/.ai_guard/ai_guard.log` (rotating, 1 MB × 10 backups). Hook stdout must contain **only** the JSON decision the host agent expects — no extra prints.
-- The `ddtrace` dependency is pinned to a custom branch (`malvarez/ai-guard-claude-code-hooks` in `pyproject.toml`'s `[tool.uv.sources]`) — don't replace with the upstream release.
+- The `ddtrace` dependency is pinned to a custom branch via a direct reference in `project.dependencies` (`ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks`). `[tool.hatch.metadata] allow-direct-references = true` opts hatchling into that form. Both `pip install git+...` and `uv sync` resolve to the same branch. Don't replace with the upstream release until `ddtrace.appsec.ai_guard` lands in a published version.
+- Every source/config/script file carries the standard Datadog Apache-2.0 header (see [CONTRIBUTING.md](CONTRIBUTING.md#file-header) for the exact wording). Use the comment syntax for the file's language; skip docs, JSON, and test fixtures.
 
 ## Important constraints
 

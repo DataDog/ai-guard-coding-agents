@@ -1,0 +1,75 @@
+# Contributing
+
+Thanks for your interest in AI Guard for Coding Agents. We welcome bug reports,
+feature requests, and pull requests.
+
+## Filing issues
+
+- Search [existing issues](https://github.com/DataDog/ai-guard-coding-agents/issues) before
+  opening a new one.
+- Use the bug report or feature request template. Please include enough context
+  for someone else to reproduce or evaluate the request.
+- Do **not** file security vulnerabilities as public issues. See
+  [Reporting security issues](#reporting-security-issues) below.
+
+## Reporting security issues
+
+If you believe you've found a security vulnerability, please follow the
+disclosure process at <https://www.datadoghq.com/security/>. Do not open a
+public GitHub issue.
+
+## Development setup
+
+```bash
+# Python 3.11+ and uv (https://docs.astral.sh/uv/) are required.
+uv sync --extra test --extra build
+
+# Run the unit and integration suites (skips binary-marker tests if no binary).
+uv run pytest -q
+
+# Build the single-file executable.
+uv run pyinstaller ai-guard.spec
+
+# Then run the binary smoke tests.
+uv run pytest -m binary -v
+
+# Lint and format.
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+```
+
+See [`AGENTS.md`](AGENTS.md) for an in-depth walkthrough of the codebase and
+the conventions we follow.
+
+## Pull requests
+
+1. Fork the repository and create a topic branch from `main`.
+2. Make your change. Keep diffs focused: one logical change per PR.
+3. Add or update tests so the suite covers the new behaviour. CI runs
+   `ruff check`, `ruff format --check`, and the full pytest suite on Linux,
+   macOS, and Windows; see [`.github/workflows/test.yml`](.github/workflows/test.yml).
+4. Open the PR against `main` and fill in the pull request template.
+5. By submitting a PR you agree to license your contribution under the
+   [Apache 2.0 License](LICENSE) that covers this repository.
+
+## Adding third-party dependencies
+
+If your change pulls in a new runtime dependency, please update
+[`LICENSE-3rdparty.csv`](LICENSE-3rdparty.csv) in the same PR so the third-party
+inventory stays accurate. Only Apache-2.0-compatible licenses are accepted; see the
+[Datadog Open Source Policy](https://datadoghq.atlassian.net/wiki/spaces/OS/pages/2178220485/Releasing+Open+Source+Code+at+Datadog)
+for the approved list.
+
+## File header
+
+Every new source file should carry the standard Datadog header:
+
+```
+Unless explicitly stated otherwise all files in this repository are licensed
+under the Apache 2.0 License.
+
+This product includes software developed at Datadog (https://www.datadoghq.com/).
+Copyright 2026-Present Datadog, Inc.
+```
+
+Use the comment syntax for the file's language.
