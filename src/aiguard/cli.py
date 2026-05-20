@@ -30,6 +30,7 @@ if not __package__:
 from ddtrace import tracer  # noqa: E402
 
 from aiguard import __version__  # noqa: E402
+from aiguard.installer.installer import install, uninstall  # noqa: E402
 from aiguard.proxy.server import proxy  # noqa: E402
 
 logger = logging.getLogger("ai_guard")
@@ -87,19 +88,25 @@ def main(log_file: str | None) -> None:
 
     \b
     Commands:
-      hook    Dispatch a hook event for an agent
-      proxy   Transparent HTTP proxy for inspecting LLM traffic
+      hook       Dispatch a hook event for an agent
+      proxy      Transparent HTTP proxy for inspecting LLM traffic
+      install    Set up ai-guard for detected coding agents
+      uninstall  Remove ai-guard and restore agent configs
 
     \b
     Examples:
       ai-guard hook claude SessionStart < event.json
       ai-guard proxy --port 29279 --anthropic-upstream https://api.anthropic.com
+      ai-guard install
+      ai-guard uninstall --yes
     """
     _setup_logging(log_file)
 
 
 main.add_command(hook)
 main.add_command(proxy)
+main.add_command(install)
+main.add_command(uninstall)
 
 if __name__ == "__main__":
     main()

@@ -63,7 +63,27 @@ jobs:
         if: runner.os == 'Windows'
         run: mv dist/ai-guard.exe dist/${{ matrix.artifact }}
 
+      - name: Generate SHA-256 sidecar (Unix)
+        if: runner.os != 'Windows'
+        working-directory: dist
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          fi
+
+      - name: Generate SHA-256 sidecar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}").Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}" | Out-File -Encoding ascii -NoNewline "${{ matrix.artifact }}.sha256"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.artifact }}.sha256

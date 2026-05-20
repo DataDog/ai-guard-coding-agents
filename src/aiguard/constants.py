@@ -27,3 +27,12 @@ class AIGuardConstants(object):
 
     # CODING AGENTS
     CLAUDE_CODE = "claude_code"
+
+    # Installer services
+    LAUNCHD_LABEL = "com.datadoghq.ai-guard"
+    SYSTEMD_UNIT_NAME = "ai-guard.service"
+
+    # Proxy defaults (used by the proxy server, the hook client, and the installer)
+    PROXY_HOST_DEFAULT = "127.0.0.1"
+    PROXY_PORT_DEFAULT = 29279
+    PROXY_URL_DEFAULT = f"http://{PROXY_HOST_DEFAULT}:{PROXY_PORT_DEFAULT}"

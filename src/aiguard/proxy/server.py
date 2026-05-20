@@ -17,6 +17,7 @@ import aiohttp.web
 import click
 from ddtrace.appsec.ai_guard import Message
 
+from aiguard.constants import AIGuardConstants
 from aiguard.storage import save_messages
 
 logger = logging.getLogger("ai_guard")
@@ -254,14 +255,14 @@ def _is_hook_request(request: aiohttp.web.Request) -> bool:
 @click.command("proxy")
 @click.option(
     "--host",
-    default="127.0.0.1",
+    default=AIGuardConstants.PROXY_HOST_DEFAULT,
     show_default=True,
     envvar="DD_AI_GUARD_PROXY_HOST",
     help="Local interface to bind. Use 0.0.0.0 to expose on all interfaces.",
 )
 @click.option(
     "--port",
-    default=29279,
+    default=AIGuardConstants.PROXY_PORT_DEFAULT,
     show_default=True,
     type=int,
     envvar="DD_AI_GUARD_PROXY_PORT",

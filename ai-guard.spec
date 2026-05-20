@@ -10,15 +10,44 @@ a = Analysis(
     ["src/aiguard/__main__.py"],
     pathex=["src"],
     binaries=[],
-    datas=[],
+    datas=[
+        # Service-registration templates loaded via importlib.resources.
+        ("src/aiguard/installer/templates/*.in", "aiguard/installer/templates"),
+    ],
     hiddenimports=[
         "aiguard",
         "aiguard.claude",
+        "aiguard.claude.installer",
+        "aiguard.claude.proxy",
         "aiguard.hooks",
         "aiguard.hooks.hooks",
         "aiguard.proxy",
         "aiguard.proxy.server",
-        "aiguard.claude.proxy",
+        "aiguard.installer",
+        "aiguard.installer.agent",
+        "aiguard.installer.backup",
+        "aiguard.installer.config",
+        "aiguard.installer.installer",
+        "aiguard.installer.paths",
+        "aiguard.installer.prompt",
+        # service.manager picks one of these at runtime via platform check, so
+        # PyInstaller's static analyser can't see the conditional import.
+        "aiguard.installer.service",
+        "aiguard.installer.service.manager",
+        "aiguard.installer.service.launchd",
+        "aiguard.installer.service.systemd_user",
+        "aiguard.installer.service.readiness",
+        "aiguard.installer.service.wrapper",
+        # Templates are accessed via importlib.resources.files(__package__);
+        # the package itself must be importable for the lookup to find the
+        # bundled .in files declared in `datas`.
+        "aiguard.installer.templates",
+        "rich",
+        "rich.console",
+        "rich.panel",
+        "rich.table",
+        # Lazily imported from aiguard.installer.prompt only on a real TTY.
+        "pwinput",
         # aiohttp core + C extensions
         "aiohttp",
         "aiohttp.web",

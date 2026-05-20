@@ -1,0 +1,14 @@
+[Unit]
+Description=Datadog AI Guard proxy for coding agents
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${WRAPPER}
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:${LOG}
+StandardError=append:${LOG}
+
+[Install]
+WantedBy=default.target
