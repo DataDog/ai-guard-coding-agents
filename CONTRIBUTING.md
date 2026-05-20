@@ -56,9 +56,8 @@ the conventions we follow.
 
 If your change pulls in a new runtime dependency, please update
 [`LICENSE-3rdparty.csv`](LICENSE-3rdparty.csv) in the same PR so the third-party
-inventory stays accurate. Only Apache-2.0-compatible licenses are accepted; see the
-[Datadog Open Source Policy](https://datadoghq.atlassian.net/wiki/spaces/OS/pages/2178220485/Releasing+Open+Source+Code+at+Datadog)
-for the approved list.
+inventory stays accurate. Only Apache-2.0-compatible licenses are accepted
+(Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, and similar permissive licenses).
 
 ## File header
 
