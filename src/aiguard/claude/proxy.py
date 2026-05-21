@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +209,33 @@ class ClaudeProxy(ProxyHandler):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
+# Sites where the UI lives at ``app.<site>``. Regional sites
+# (``us3.datadoghq.com``, ``us5.datadoghq.com``, ``ap1.datadoghq.com``, …) already
+# carry their subdomain and are reached at ``https://<site>`` directly — adding
+# ``app.`` breaks them.
+_APP_PREFIX_SITES = frozenset(
+    {
+        "datadoghq.com",
+        "datadoghq.eu",
+        "ddog-gov.com",
+        "datad0g.com",
+    }
+)
+
+
+def _ai_guard_ui_url(session_id: str) -> str | None:
+    if not session_id:
+        return None
+    site = os.environ.get("DD_SITE") or "datadoghq.com"
+    host = f"app.{site}" if site in _APP_PREFIX_SITES else site
+    query = urllib.parse.quote(
+        f"resource_name:ai_guard "
+        f"@{AIGuardConstants.CODING_AGENT_TAG}:* "
+        f"@{AIGuardConstants.SESSION_ID_TAG}:{session_id}"
+    )
+    return f"https://{host}/security/ai-guard/investigate?query={query}&group_by=session"
+
+
 def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
     tags: dict[str, Any] = {
         AIGuardConstants.CODING_AGENT_TAG: AIGuardConstants.CLAUDE_CODE,
@@ -238,6 +267,7 @@ def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
 def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
     event_name = event.get("hook_event_name", "")
     tool_name = event.get("tool_name", "")
+    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
     display_reason = "\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m Blocked by security policy"
 
     facts = [
@@ -251,6 +281,9 @@ def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> d
         facts.append(f"- Most likely risk: `{top_tag}` at {top_prob * 100:.0f}% confidence")
         facts.append(f"- Risk breakdown (highest first): {breakdown}")
 
+    if ui_url:
+        facts.append(f"- Investigate in Datadog: {ui_url}")
+
     instructions = [
         "",
         "In your next reply, write a short user-facing message that:",
@@ -259,6 +292,7 @@ def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> d
         "also include other categories if they have high probabilities."
         "3. Suggests sensible next steps (rephrase the request, review the input, inspect the "
         "affected file, or contact the user's security team).",
+        "4. If a Datadog investigation link is provided above, include it in the response.",
         "Do not retry the call automatically. Do not invent details beyond what is listed above.",
     ]
 

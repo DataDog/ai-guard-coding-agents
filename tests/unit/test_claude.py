@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from ddtrace.appsec.ai_guard import AIGuardAbortError, Message
 from aiguard import storage
 from aiguard.claude.proxy import (
     ClaudeProxy,
+    _ai_guard_ui_url,
     _blocked_tool_response,
     _fetch_session_id,
     _parse_anthropic_message,
@@ -185,6 +187,94 @@ class TestBlockedTool:
         context = _blocked_tool_response(event, abort)["hookSpecificOutput"]["additionalContext"]
         assert "located at" not in context
         assert "audit any other recently installed skills" in context
+
+    def test_pre_tool_use_includes_ui_url_when_session_id_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DD_SITE", raising=False)
+
+        abort = AIGuardAbortError(action="DENY", reason="prompt_injection", tags=["t"])
+        sid = "01e28aae-7b00-43e8-af0e-b5e6b3b9c7ed"
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": sid}
+        result = _blocked_tool_response(event, abort)
+
+        context = result["hookSpecificOutput"]["additionalContext"]
+        url_prefix = "https://app.datadoghq.com/security/ai-guard/investigate?query="
+        assert f"- Investigate in Datadog: {url_prefix}" in context
+        assert sid in context
+        # Model is told to surface the link in its reply.
+        assert "include it in the response" in context
+
+    def test_post_tool_use_includes_ui_url_with_dd_site(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DD_SITE", "datad0g.com")
+
+        abort = AIGuardAbortError(action="DENY", reason="leaked_secret", tags=["t"])
+        event = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": "sess-42"}
+        result = _blocked_tool_response(event, abort)
+
+        context = result["hookSpecificOutput"]["additionalContext"]
+        url_prefix = "https://app.datad0g.com/security/ai-guard/investigate?query="
+        assert f"- Investigate in Datadog: {url_prefix}" in context
+        assert "sess-42" in context
+
+    def test_omits_ui_url_when_session_id_missing(self) -> None:
+        abort = AIGuardAbortError(action="DENY", reason="r", tags=["t"])
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Bash"}
+        result = _blocked_tool_response(event, abort)
+
+        context = result["hookSpecificOutput"]["additionalContext"]
+        assert "/security/ai-guard/investigate" not in context
+        assert "Investigate in Datadog" not in context
+
+
+class TestAIGuardUIURL:
+    """``_ai_guard_ui_url`` builds the Datadog investigate link or returns None."""
+
+    def test_returns_none_when_session_id_is_empty(self) -> None:
+        assert _ai_guard_ui_url("") is None
+
+    def test_defaults_to_datadoghq_when_dd_site_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DD_SITE", raising=False)
+        url = _ai_guard_ui_url("sess-42")
+        assert url is not None
+        assert url.startswith("https://app.datadoghq.com/security/ai-guard/investigate?query=")
+
+    def test_regional_site_skips_app_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # us3 / us5 / ap1 already carry their subdomain — the UI is reached at
+        # the bare site host. Adding ``app.`` would point at a non-existent host.
+        monkeypatch.setenv("DD_SITE", "us3.datadoghq.com")
+        url = _ai_guard_ui_url("sess-42")
+        assert url is not None
+        assert url.startswith("https://us3.datadoghq.com/security/ai-guard/investigate?query=")
+
+    @pytest.mark.parametrize(
+        "site",
+        ["datadoghq.com", "datadoghq.eu", "ddog-gov.com", "datad0g.com"],
+    )
+    def test_app_prefix_applied_for_non_regional_sites(
+        self, monkeypatch: pytest.MonkeyPatch, site: str
+    ) -> None:
+        monkeypatch.setenv("DD_SITE", site)
+        url = _ai_guard_ui_url("sess-42")
+        assert url is not None
+        assert url.startswith(f"https://app.{site}/security/ai-guard/investigate?query=")
+
+    def test_query_filters_by_resource_coding_agent_and_session_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DD_SITE", raising=False)
+        sid = "01e28aae-7b00-43e8-af0e-b5e6b3b9c7ed"
+        url = _ai_guard_ui_url(sid)
+        assert url is not None
+        _, _, query = url.partition("?query=")
+        decoded = urllib.parse.unquote(query)
+        assert "resource_name:ai_guard" in decoded
+        assert "@ai_guard.coding_agent:*" in decoded
+        assert f"@ai_guard.usr.session_id:{sid}" in decoded
 
 
 # ── claude/proxy.py — message parsers ─────────────────────────────────────────
