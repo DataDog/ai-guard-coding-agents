@@ -1,3 +1,9 @@
+# Unless explicitly stated otherwise all files in this repository are licensed
+# under the Apache 2.0 License.
+#
+# This product includes software developed at Datadog (https://www.datadoghq.com/).
+# Copyright 2026-Present Datadog, Inc.
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -5,17 +11,17 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-guard"
 version = "0.1.0"
-description = "SDK and hook integrations bringing AI Guard's real-time threat detection to coding agents — Claude Code, Codex, and Cursor."
+description = "SDK and hook integrations bringing AI Guard's real-time threat detection to coding agents: Claude Code, Codex, and Cursor."
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",
     "click>=8.0",
-    "ddtrace",
+    "ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks",
 ]
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]
-dev = ["ruff>=0.15"]
+dev = ["ruff>=0.15.12"]
 test = [
     "pytest>=9",
     "pytest-asyncio>=1.0",
@@ -24,6 +30,12 @@ test = [
 
 [project.scripts]
 ai-guard = "aiguard.cli:main"
+
+[tool.hatch.metadata]
+# Allow `pkg @ git+https://...` direct references in `project.dependencies`.
+# Required while `ddtrace` is pinned to a custom branch; revisit once the
+# AI Guard module lands in a released `ddtrace` and the pin can be a version.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aiguard"]
@@ -51,10 +63,7 @@ select = ["E", "F", "I"]
 [tool.ruff.format]
 quote-style = "double"
 
-[tool.uv.sources]
-ddtrace = { git = "https://github.com/DataDog/dd-trace-py", branch = "malvarez/ai-guard-claude-code-hooks" }
-
 [dependency-groups]
 dev = [
-    "ruff>=0.15.11",
+    "ruff>=0.15.12",
 ]
