@@ -65,35 +65,3 @@ def is_running() -> bool:
     # service unit may be ``inactive`` between requests — that's expected.
     result = _systemctl("is-active", AIGuardConstants.SYSTEMD_SOCKET_NAME, check=False)
     return result.stdout.strip() == "active"
-
-
-# ── Log access ────────────────────────────────────────────────────────────────
-
-# Service stdout/stderr is captured by systemd into the journal
-# (``StandardOutput=journal`` in the unit). ``journalctl --user`` is the
-# canonical reader.
-
-
-def log_hint() -> str:
-    """User-facing command for tailing the service log."""
-    return f"journalctl --user -u {AIGuardConstants.SYSTEMD_UNIT_NAME}"
-
-
-def tail_log(lines: int = 50) -> tuple[str, str]:
-    """Return ``(title, body)`` for the last ``lines`` journal entries."""
-    cmd = [
-        "journalctl",
-        "--user",
-        "-u",
-        AIGuardConstants.SYSTEMD_UNIT_NAME,
-        "--no-pager",
-        "-n",
-        str(lines),
-    ]
-    title = " ".join(cmd)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
-        body = result.stdout or result.stderr or "(empty)"
-    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.SubprocessError) as exc:
-        body = f"(could not read service log: {exc})"
-    return title, body

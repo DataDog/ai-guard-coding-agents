@@ -7,8 +7,6 @@ above is agnostic to the specifics.
 
 from __future__ import annotations
 
-import os
-import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,9 +17,9 @@ class Field:
     """A single configuration value the installer collects and writes to
     ``~/.ai_guard/config.env``.
 
-    Lives here (not in :mod:`aiguard.installer.prompt`) so agent modules can
-    return their own ``Field`` instances from :meth:`AgentInstaller.env_fields`
-    without :mod:`prompt` having to import them and create a cycle.
+    Lives in this lightweight module so agent plugins can declare ``Field``
+    instances via :meth:`AgentInstaller.env_fields` without importing the
+    installer's UI / CLI stack.
     """
 
     key: str
@@ -46,20 +44,6 @@ class AgentInstaller(ABC):
     def uninstall(self) -> list[Path]:
         """Remove our hooks from the agent settings."""
 
-    def env_fields(self) -> tuple[Field, ...]:
+    def env_fields(self) -> list[Field]:
         """Return agent-specific config fields to merge into the prompt list."""
-        return ()
-
-
-def _which(cmd: str) -> Path | None:
-    found = shutil.which(cmd)
-    return Path(found) if found else None
-
-
-def detect_executable(name: str) -> Path | None:
-    return _which(name)
-
-
-def detect_env_var(key: str) -> str | None:
-    value = os.environ.get(key)
-    return value if value else None
+        return []

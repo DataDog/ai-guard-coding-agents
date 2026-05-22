@@ -7,11 +7,14 @@
   monkeypatch these to exercise both backends on either host OS.
 * :func:`wait_ready` — pure-stdlib equivalent of ``nc -z host port`` in a
   poll loop. Used by the installer to confirm the proxy came up.
+* :func:`detect_executable` — :func:`shutil.which` wrapper returning a
+  :class:`Path`. Used by agent installers to test whether a tool is on PATH.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -71,3 +74,8 @@ def wait_ready(host: str, port: int, timeout: float = 5.0, interval: float = 0.1
         if time.monotonic() >= deadline:
             return False
         time.sleep(interval)
+
+
+def detect_executable(name: str) -> Path | None:
+    found = shutil.which(name)
+    return Path(found) if found else None

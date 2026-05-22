@@ -14,8 +14,8 @@ from pathlib import Path
 
 from aiguard import paths, storage
 from aiguard.constants import AIGuardConstants
-from aiguard.installer.agent import AgentInstaller, Field, detect_executable
-from aiguard.utils import atomic_write
+from aiguard.installer.agent import AgentInstaller, Field
+from aiguard.utils import atomic_write, detect_executable
 
 HOOK_EVENTS: tuple[str, ...] = (
     "SessionStart",
@@ -63,15 +63,15 @@ class ClaudeInstaller(AgentInstaller):
         settings_path = paths.claude_settings_path()
         return settings_path.exists() or detect_executable("claude") is not None
 
-    def env_fields(self) -> tuple[Field, ...]:
-        return (
+    def env_fields(self) -> list[Field]:
+        return [
             Field(
                 "DD_AI_GUARD_ANTHROPIC_UPSTREAM",
                 "Upstream Anthropic endpoint",
                 default=self._detect_upstream() or AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT,
                 tier=2,
             ),
-        )
+        ]
 
     def install(self, proxy_url: str) -> list[Path]:
         original = self._load()

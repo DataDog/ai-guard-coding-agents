@@ -63,10 +63,8 @@ Every path the installer creates or modifies is listed below — nothing else on
 | `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist` | LaunchAgent loaded via `launchctl bootstrap`.             | `macOS` | `*`           |
 | `~/.claude/settings.json`                             | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`. | `*`     | `Claude Code` |
 
-Service stdout and stderr go to the platform's native log facility:
-
-- Linux (journald) — `journalctl --user -u ai-guard.service`
-- macOS (unified log) — `log show --predicate 'eventMessage CONTAINS "ai-guard"'`
+Service output is captured by the proxy's rotating logger at `~/.ai_guard/ai_guard.log`, including uncaught Python
+exceptions.
 
 ### Uninstall
 

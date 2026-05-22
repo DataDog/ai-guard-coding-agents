@@ -8,6 +8,3 @@ Type=simple
 ExecStart=${WRAPPER}
 Restart=on-failure
 RestartSec=2
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=ai-guard

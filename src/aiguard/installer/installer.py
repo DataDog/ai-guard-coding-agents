@@ -8,7 +8,6 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.panel import Panel
 from rich.text import Text
 
 from aiguard import paths, utils
@@ -240,7 +239,6 @@ def _summary(
         ("Binary", str(paths.binary_path())),
         ("Config", str(paths.config_env_path())),
         ("App log", str(paths.log_file_path())),
-        ("Service log", service_manager.log_hint()),
         ("Service", _service_path()),
     ]
 
@@ -263,19 +261,6 @@ def _summary(
     ]
     ui.hints_table(c, hints)
     c.print()
-
-
-def _tail_log(c: Console, lines: int = 50) -> None:
-    """Show recent service log on readiness failure.
-
-    The service captures stdout/stderr through the platform's standard log
-    facility — journald on Linux, unified log on macOS — which catches
-    startup crashes that happen before the proxy's own Python logger is set
-    up. The service manager owns the platform-specific reader; we just
-    panel the output.
-    """
-    title, body = service_manager.tail_log(lines)
-    c.print(Panel(body, title=title, border_style=ui.ERR))
 
 
 # ── install ────────────────────────────────────────────────────────────────────
@@ -401,7 +386,6 @@ def install(
 
     if not wait_ready(ready_host, port, timeout=10.0):
         ui.err(c, f"proxy did not come up on {ready_host}:{port} within 10s")
-        _tail_log(c)
         sys.exit(1)
     body = Text()
     body.append("proxy responding on ")
@@ -426,9 +410,9 @@ def uninstall(yes: bool, no_color: bool) -> None:
         bullets = [
             "Stop and remove the AI Guard service",
             "Remove AI Guard from detected agent configs",
-            "Delete ~/.ai_guard/config.env, backups, and session history",
+            "Delete ~/.ai_guard/config.env and session history",
             "Delete the binary at ~/.local/bin/ai-guard",
-            "Keep ~/.ai_guard/ai_guard.log* (service log lives in journald / unified log)",
+            "Keep ~/.ai_guard/ai_guard.log* (proxy logs)",
         ]
         ui.confirm_block(c, "About to:", bullets)
         if not click.confirm("Continue?", default=False):
@@ -460,7 +444,7 @@ def uninstall(yes: bool, no_color: bool) -> None:
 
     ui.section(c, "Result")
     _purge_state_dir()
-    ui.ok(c, "config + backups + session history removed")
+    ui.ok(c, "config + session history removed")
 
     try:
         paths.wrapper_path().unlink()
@@ -475,7 +459,6 @@ def uninstall(yes: bool, no_color: bool) -> None:
 
     rows: list[tuple[str, str]] = [
         ("App log", f"{paths.log_file_path()}*"),
-        ("Service log", service_manager.log_hint()),
     ]
     ui.summary_panel(c, "✓  AI Guard uninstalled", rows, border=ui.OK)
     c.print()
@@ -504,10 +487,7 @@ def _purge_state_dir() -> None:
     """Remove everything under ~/.ai_guard except the application log files.
 
     The proxy's rotating application log (``ai_guard.log*``) is preserved so
-    the user keeps a forensic trail after uninstall. Service stdout/stderr
-    no longer lives on disk under ``~/.ai_guard`` — it's in journald / the
-    macOS unified log, both of which outlive ``ai-guard uninstall``
-    independently.
+    the user keeps a forensic trail after uninstall.
     """
     state = paths.state_dir()
     if not state.exists():

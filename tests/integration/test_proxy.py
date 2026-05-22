@@ -721,7 +721,12 @@ class TestProxyInheritedSocket:
         import os
         import socket as socket_mod
 
+        from aiguard import utils
         from aiguard.proxy import server as proxy_module
+
+        # Force the linux branch so the test is platform-agnostic.
+        monkeypatch.setattr(utils, "is_linux", lambda: True)
+        monkeypatch.setattr(utils, "is_macos", lambda: False)
 
         # Build two real sockets so the fileno path returns valid descriptors,
         # but verify ``_inherited_sockets`` reaches for the right env vars.

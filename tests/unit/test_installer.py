@@ -483,9 +483,10 @@ class TestService:
         text = target.read_text()
         assert str(paths.config_env_path()) in text
         assert str(paths.binary_path()) in text
-        # Linux exec path; macOS pipes through logger.
+        # ``exec`` (not a pipeline) so the proxy is the init system's direct
+        # child — required for launchd / systemd socket-activation handoff.
         assert "exec" in text
-        assert "logger -t ai-guard" in text
+        assert "| /usr/bin/logger" not in text
         assert target.stat().st_mode & 0o777 == 0o755
 
     def test_wrapper_remove_is_safe_when_missing(self, tmp_home: Path) -> None:
@@ -513,8 +514,8 @@ class TestService:
         assert "<string>29279</string>" in out
         assert "RunAtLoad" not in out
         assert "KeepAlive" not in out
-        # No log-file paths land in the plist anymore — the wrapper pipes
-        # through ``logger -t ai-guard`` into the unified log.
+        # No log-file paths land in the plist — service output is captured by
+        # the proxy's own rotating logger at ``~/.ai_guard/ai_guard.log``.
         assert "StandardOutPath" not in out
         assert "StandardErrorPath" not in out
 
@@ -525,8 +526,10 @@ class TestService:
             SOCKET_NAME="ai-guard.socket",
         )
         assert "ExecStart=/home/u/.local/bin/ai-guard-service" in out
-        # journald captures stdout/stderr — no on-disk log file path.
-        assert "StandardOutput=journal" in out
+        # No StandardOutput/StandardError stanza — service output is captured
+        # by the proxy's own rotating logger at ``~/.ai_guard/ai_guard.log``.
+        assert "StandardOutput" not in out
+        assert "StandardError" not in out
         assert "Restart=on-failure" in out
         # Service is socket-activated; the socket unit is what gets enabled,
         # so the service no longer carries [Install]/WantedBy.
@@ -551,9 +554,9 @@ class TestService:
     ) -> None:
         """Regression: the plist must not point launchd at any on-disk log file.
 
-        Service stdout/stderr is piped through ``logger -t ai-guard`` by the
-        wrapper into the macOS unified log. A bare log file path in the plist
-        would re-introduce a custom rotation surface we've explicitly removed.
+        Service output is captured by the proxy's own rotating logger at
+        ``~/.ai_guard/ai_guard.log``. A bare log file path in the plist would
+        re-introduce a custom rotation surface we've explicitly removed.
         """
         from aiguard.installer.service import launchd
 
@@ -583,8 +586,10 @@ class TestService:
         systemd_user.install()
 
         unit = paths.systemd_unit_path().read_text()
-        assert "StandardOutput=journal" in unit
-        # No on-disk capture surface should leak into the unit.
+        # No log routing in the unit — output is captured by the proxy's own
+        # rotating logger at ``~/.ai_guard/ai_guard.log``.
+        assert "StandardOutput" not in unit
+        assert "StandardError" not in unit
         assert str(paths.log_file_path()) not in unit
         assert "append:" not in unit
 
@@ -628,62 +633,6 @@ class TestService:
         # Bootout-then-bootstrap pattern.
         assert any(c[:2] == ["launchctl", "bootout"] for c in calls)
         assert any(c[:2] == ["launchctl", "bootstrap"] for c in calls)
-
-    # ── Log access (owned by each backend; manager just dispatches) ───────────
-
-    def test_launchd_log_hint_is_unified_log_reader(self) -> None:
-        from aiguard.installer.service import launchd
-
-        hint = launchd.log_hint()
-        assert hint.startswith("log show")
-        assert "ai-guard" in hint
-
-    def test_systemd_log_hint_is_journalctl(self) -> None:
-        from aiguard.installer.service import systemd_user
-
-        hint = systemd_user.log_hint()
-        assert hint.startswith("journalctl --user")
-        assert "ai-guard.service" in hint
-
-    def test_manager_log_hint_dispatches_per_platform(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from aiguard.installer.service import manager
-
-        monkeypatch.setattr(utils, "is_macos", lambda: False)
-        monkeypatch.setattr(utils, "is_linux", lambda: True)
-        assert manager.log_hint().startswith("journalctl --user")
-
-        monkeypatch.setattr(utils, "is_macos", lambda: True)
-        monkeypatch.setattr(utils, "is_linux", lambda: False)
-        assert manager.log_hint().startswith("log show")
-
-    def test_systemd_tail_log_returns_command_and_output(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from aiguard.installer.service import systemd_user
-
-        def fake_run(args, **kwargs):
-            return MagicMock(returncode=0, stdout="line one\nline two\n", stderr="")
-
-        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        title, body = systemd_user.tail_log(lines=25)
-        assert "journalctl" in title
-        assert "-n 25" in title
-        assert body == "line one\nline two\n"
-
-    def test_launchd_tail_log_returns_command_and_output(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from aiguard.installer.service import launchd
-
-        def fake_run(args, **kwargs):
-            return MagicMock(returncode=0, stdout="msg one\n", stderr="")
-
-        monkeypatch.setattr(launchd.subprocess, "run", fake_run)
-        title, body = launchd.tail_log()
-        assert title.startswith("log show")
-        assert body == "msg one\n"
 
 
 # =============================================================================
@@ -761,9 +710,9 @@ class TestCli:
     ) -> None:
         """After uninstall, only the proxy's rotating app log survives on disk.
 
-        Service stdout/stderr lives in journald (Linux) or the unified log
-        (macOS) — both outlive ``ai-guard uninstall`` independently and aren't
-        under our state dir.
+        The wrapper ``exec``s the proxy with no extra log routing, so the
+        rotating app log at ``~/.ai_guard/ai_guard.log`` is the only on-disk
+        surface either platform leaves behind.
         """
         monkeypatch.setenv("DD_API_KEY", "k")
         monkeypatch.setenv("DD_APP_KEY", "a")
@@ -985,17 +934,17 @@ class FakeAgent(AgentInstaller):
     def detect(self) -> bool:
         return self._settings_path.parent.exists()
 
-    def env_fields(self) -> tuple[Field, ...]:
+    def env_fields(self) -> list[Field]:
         # FakeAgent demonstrates a non-Anthropic agent contributing its own
         # tier-2 upstream var, sourced from its own on-disk config.
-        return (
+        return [
             Field(
                 "DD_AI_GUARD_FAKE_UPSTREAM",
                 "Upstream Fake endpoint",
                 default=self._load().get(self.UPSTREAM_KEY) or "https://api.fake.example",
                 tier=2,
             ),
-        )
+        ]
 
     def install(self, proxy_url: str) -> list[Path]:
         data = self._load()

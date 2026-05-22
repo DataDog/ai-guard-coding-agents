@@ -344,47 +344,109 @@ def _systemd_activate_socket() -> list[socket.socket]:
         return []
 
 
-def _launchd_activate_socket(name: str) -> list[socket.socket]:
-    """Retrieve listening sockets registered for ``name`` in the launchd plist.
+def _resolve_libsystem():
+    """Resolve launch_activate_socket and free from libSystem (cached).
 
-    Wraps ``launch_activate_socket(3)`` via ctypes — we don't want a hard
-    dependency on a third-party launchd binding just to read a single fd. If
-    launchd didn't hand us anything (foreground run, not socket-activated),
-    the call returns ``ENOENT`` and we treat that as "no inherited socket".
+    Returns (launch_fn, free_fn) or (None, None) if anything is missing.
     """
-    import ctypes.util
+
+    import ctypes
 
     libname = ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib"
     try:
         libsys = ctypes.CDLL(libname)
-    except OSError:
-        return []
+    except Exception:
+        logger.error("Could not load %s: %s", libname, exc_info=True)
+        return None, None
 
-    libsys.launch_activate_socket.argtypes = [
+    try:
+        launch_fn = libsys.launch_activate_socket
+    except AttributeError:
+        logger.error(
+            "launch_activate_socket missing from %s (requires macOS 10.10+)", libname, exc_info=True
+        )
+        return None, None
+
+    launch_fn.argtypes = [
         ctypes.c_char_p,
         ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),
         ctypes.POINTER(ctypes.c_size_t),
     ]
-    libsys.launch_activate_socket.restype = ctypes.c_int
+    launch_fn.restype = ctypes.c_int
+
+    free_fn = libsys.free
+    free_fn.argtypes = [ctypes.c_void_p]
+    free_fn.restype = None
+
+    _launch_activate_socket, _free = launch_fn, free_fn
+    return launch_fn, free_fn
+
+
+def _launchd_activate_socket(name: str) -> list[socket.socket]:
+    """Return listening sockets registered for ``name`` via launchd.
+
+    Wraps ``launch_activate_socket(3)``. Returns ``[]`` when launchd has nothing to hand us:
+    foreground run, not socket-activated, or the named entry isn't in the plist.
+    """
+    launch_fn, free_fn = _resolve_libsystem()
+    if launch_fn is None:
+        return []
+
+    import ctypes
+    import errno
 
     fds_ptr = ctypes.POINTER(ctypes.c_int)()
     count = ctypes.c_size_t(0)
-    rc = libsys.launch_activate_socket(
-        name.encode("utf-8"),
-        ctypes.byref(fds_ptr),
-        ctypes.byref(count),
-    )
-    if rc != 0 or not fds_ptr:
+    rc = launch_fn(name.encode("utf-8"), ctypes.byref(fds_ptr), ctypes.byref(count))
+
+    if rc != 0:
+        # ENOENT: name not present in the plist (common when not socket-activated).
+        # ESRCH:  process isn't managed by launchd.
+        # Anything else is suspicious enough to warn about.
+        expected = rc in (errno.ENOENT, errno.ESRCH)
+        logger.log(
+            logging.DEBUG if expected else logging.WARNING,
+            "launch_activate_socket(%r) failed: %s (errno %d)",
+            name,
+            os.strerror(rc),
+            rc,
+        )
         return []
 
-    socks = [socket.socket(fileno=fds_ptr[i]) for i in range(count.value)]
+    if not fds_ptr or count.value == 0:
+        logger.debug("launch_activate_socket(%r) returned no sockets", name)
+        return []
 
-    # `fds_ptr` was allocated by launchd with `malloc`; free it.
-    libc_name = ctypes.util.find_library("c") or "/usr/lib/libc.dylib"
+    # Copy the fd numbers out so we can free launchd's array immediately.
+    raw_fds = [fds_ptr[i] for i in range(count.value)]
     try:
-        ctypes.CDLL(libc_name).free(fds_ptr)
+        free_fn(fds_ptr)
+    except Exception:
+        logger.exception("free() of launchd fd array failed; continuing", exc_info=True)
+
+    socks: list[socket.socket] = []
+    try:
+        for fd in raw_fds:
+            socks.append(socket.socket(fileno=fd))
     except OSError:
-        pass
+        failed_idx = len(socks)
+        logger.exception(
+            "Failed to wrap inherited fd %d as socket", raw_fds[failed_idx], exc_info=True
+        )
+        # Close sockets we already created; close raw fds we never reached
+        # (including the one that just failed — socket() doesn't close on error).
+        for s in socks:
+            try:
+                s.close()
+            except OSError:
+                pass
+        for fd in raw_fds[failed_idx:]:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
     return socks
 
 
