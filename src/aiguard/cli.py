@@ -36,7 +36,10 @@ from aiguard.proxy.server import proxy  # noqa: E402
 logger = logging.getLogger("ai_guard")
 
 
-def _setup_logging(log_file: str | None) -> None:
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _setup_logging(log_file: str | None, log_level: str) -> None:
     if not log_file:
         logger.addHandler(logging.NullHandler())
         return
@@ -49,7 +52,7 @@ def _setup_logging(log_file: str | None) -> None:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(getattr(logging, log_level.upper()))
 
     def _excepthook(exc_type, exc_value, exc_tb):
         if not issubclass(exc_type, KeyboardInterrupt):
@@ -79,7 +82,15 @@ class _Group(click.Group):
     show_default=True,
     help="Path to log file.",
 )
-def main(log_file: str | None) -> None:
+@click.option(
+    "--log-level",
+    envvar="DD_AI_GUARD_LOG_LEVEL",
+    type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    default="ERROR",
+    show_default=True,
+    help="Minimum severity written to the log file.",
+)
+def main(log_file: str | None, log_level: str) -> None:
     """Datadog AI Guard — real-time security for coding agents.
 
     Intercepts and evaluates every agent action (prompts, tool calls,
@@ -100,7 +111,7 @@ def main(log_file: str | None) -> None:
       ai-guard install
       ai-guard uninstall --yes
     """
-    _setup_logging(log_file)
+    _setup_logging(log_file, log_level)
 
 
 main.add_command(hook)

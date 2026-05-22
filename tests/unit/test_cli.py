@@ -54,7 +54,7 @@ class TestSetupLogging:
         logger = logging.getLogger("ai_guard")
         before = list(logger.handlers)
         try:
-            _setup_logging(None)
+            _setup_logging(None, "DEBUG")
             assert any(isinstance(h, logging.NullHandler) for h in logger.handlers)
         finally:
             logger.handlers = before
@@ -65,13 +65,35 @@ class TestSetupLogging:
         before = list(logger.handlers)
         before_level = logger.level
         try:
-            _setup_logging(str(log_file))
+            _setup_logging(str(log_file), "DEBUG")
             logger.debug("hello world")
             for h in logger.handlers:
                 h.flush()
             assert log_file.exists()
             assert "hello world" in log_file.read_text()
             assert logger.level == logging.DEBUG
+        finally:
+            for h in list(logger.handlers):
+                if h not in before:
+                    logger.removeHandler(h)
+                    h.close()
+            logger.setLevel(before_level)
+
+    def test_respects_log_level(self, tmp_path: Path) -> None:
+        log_file = tmp_path / "ai.log"
+        logger = logging.getLogger("ai_guard")
+        before = list(logger.handlers)
+        before_level = logger.level
+        try:
+            _setup_logging(str(log_file), "warning")  # case-insensitive
+            assert logger.level == logging.WARNING
+            logger.debug("debug line")
+            logger.warning("warning line")
+            for h in logger.handlers:
+                h.flush()
+            text = log_file.read_text()
+            assert "debug line" not in text
+            assert "warning line" in text
         finally:
             for h in list(logger.handlers):
                 if h not in before:

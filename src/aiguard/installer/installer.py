@@ -62,6 +62,12 @@ FIELDS: list[Field] = [
         default=str(AIGuardConstants.PROXY_IDLE_TIMEOUT_DEFAULT),
         tier=3,
     ),
+    Field(
+        "DD_AI_GUARD_LOG_LEVEL",
+        "Default logging level",
+        default="ERROR",
+        tier=3,
+    ),
 ]
 
 
