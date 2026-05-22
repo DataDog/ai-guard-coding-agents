@@ -48,6 +48,9 @@ def systemd_unit_path() -> Path:
     return home() / ".config" / "systemd" / "user" / AIGuardConstants.SYSTEMD_UNIT_NAME
 
 
+def systemd_socket_path() -> Path:
+    return home() / ".config" / "systemd" / "user" / AIGuardConstants.SYSTEMD_SOCKET_NAME
+
+
 def claude_settings_path() -> Path:
     return home() / ".claude" / "settings.json"
-

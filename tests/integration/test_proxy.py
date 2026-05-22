@@ -610,3 +610,156 @@ class TestProxyHookRouting:
             assert resp.status == 204
 
         assert handler.calls == [("session-start", b"{}")]
+
+
+# ── Idle-timeout shutdown ─────────────────────────────────────────────────────
+
+
+class TestProxyIdleTimeout:
+    """``Proxy(idle_timeout=...)`` exits the run loop after N quiet seconds.
+
+    The init systems (launchd ``Sockets``, systemd ``.socket``) re-launch on
+    the next connection — we just have to make sure ``run()`` returns cleanly
+    and that an in-flight request keeps the timer fresh.
+    """
+
+    async def test_zero_timeout_blocks_forever(self) -> None:
+        """``idle_timeout=0`` is the "stay up" mode used in interactive sessions."""
+        import asyncio
+
+        proxy = Proxy(host="127.0.0.1", port=0, handlers=[], idle_timeout=0.0)
+        # _serve_until_idle should never return on its own — assert it stays
+        # blocked across a generous wait window.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(proxy._serve_until_idle(), timeout=0.2)
+
+    async def test_returns_after_quiet_window(self) -> None:
+        """No traffic for ``idle_timeout`` seconds → ``_serve_until_idle`` returns."""
+        import time
+
+        proxy = Proxy(host="127.0.0.1", port=0, handlers=[], idle_timeout=0.1)
+        start = time.monotonic()
+        await proxy._serve_until_idle()
+        elapsed = time.monotonic() - start
+        # Should exit promptly once the idle window elapses (we allow a wide
+        # upper bound to absorb CI slowness).
+        assert 0.05 <= elapsed < 2.0
+
+    async def test_active_requests_block_shutdown(self) -> None:
+        """An in-flight request prevents idle exit even past the timeout.
+
+        We bump ``_active_requests`` to simulate a long-running stream: the
+        watcher must keep waiting until the request count drops back to zero.
+        """
+        import asyncio
+        import time
+
+        proxy = Proxy(host="127.0.0.1", port=0, handlers=[], idle_timeout=0.1)
+        proxy._active_requests = 1
+
+        async def release_after(delay: float) -> None:
+            await asyncio.sleep(delay)
+            proxy._active_requests = 0
+            proxy._last_activity = time.monotonic()
+
+        # Kick the request "release" task and time how long shutdown takes.
+        # It must NOT exit during the 0.3s the request is pretending to run.
+        watcher = asyncio.create_task(proxy._serve_until_idle())
+        releaser = asyncio.create_task(release_after(0.3))
+        start = time.monotonic()
+        try:
+            await asyncio.wait_for(watcher, timeout=2.0)
+        finally:
+            await releaser
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.3
+
+    async def test_middleware_refreshes_activity(
+        self, proxy_client, anthropic_response_body
+    ) -> None:
+        """Every request resets ``_last_activity`` so an active session never times out."""
+        import time
+
+        async def upstream(request: aiohttp.web.Request) -> aiohttp.web.Response:
+            return aiohttp.web.json_response(anthropic_response_body)
+
+        client = await proxy_client(upstream)
+        # ``proxy_client`` builds the server with a default proxy; reach into
+        # the app for the underlying Proxy instance via the middleware closure.
+        # Easier: just check the recorded last_activity moves across calls.
+        proxy = client.server.app.middlewares[0].__self__  # type: ignore[attr-defined]
+        before = proxy._last_activity
+        # Wait long enough that monotonic() will produce a strictly newer value.
+        import asyncio
+
+        await asyncio.sleep(0.01)
+        async with client.post(
+            "/v1/messages",
+            json={},
+            headers={"User-Agent": CLAUDE_UA, "x-api-key": "k"},
+        ) as resp:
+            await resp.read()
+        after = proxy._last_activity
+        assert after > before
+        assert after <= time.monotonic()
+
+
+# ── Socket activation handshake ───────────────────────────────────────────────
+
+
+class TestProxyInheritedSocket:
+    """Smoke-test the launchd / systemd FD-passing path used in production."""
+
+    async def test_uses_systemd_listen_fds_protocol(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When ``LISTEN_FDS`` / ``LISTEN_PID`` are set, the proxy adopts FDs 3..3+N.
+
+        This is the contract systemd's ``.socket`` unit hands the service:
+        the listener is pre-bound by the init system and inherited at fd 3.
+        We don't need a real socket — only that the parsing returns the
+        expected fd range.
+        """
+        import os
+        import socket as socket_mod
+
+        from aiguard.proxy import server as proxy_module
+
+        # Build two real sockets so the fileno path returns valid descriptors,
+        # but verify ``_inherited_sockets`` reaches for the right env vars.
+        s1 = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+        s2 = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+        try:
+            monkeypatch.setenv("LISTEN_PID", str(os.getpid()))
+            monkeypatch.setenv("LISTEN_FDS", "2")
+
+            captured: list[int] = []
+            real_socket = socket_mod.socket
+
+            def fake_socket(*args, **kwargs):
+                fileno = kwargs.get("fileno")
+                if fileno is not None:
+                    captured.append(fileno)
+                    # Hand back a throwaway socket so we don't actually
+                    # adopt the real fd 3/4 of the test runner.
+                    return real_socket()
+                return real_socket(*args, **kwargs)
+
+            monkeypatch.setattr(proxy_module.socket, "socket", fake_socket)
+
+            socks = proxy_module._inherited_sockets()
+            assert len(socks) == 2
+            assert captured == [3, 4]
+        finally:
+            s1.close()
+            s2.close()
+
+    async def test_pid_mismatch_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``LISTEN_PID`` set to a different pid means the env vars aren't for us."""
+        from aiguard import utils
+        from aiguard.proxy import server as proxy_module
+
+        monkeypatch.setenv("LISTEN_PID", "99999")
+        monkeypatch.setenv("LISTEN_FDS", "1")
+        # Force the linux branch so the test is platform-agnostic.
+        monkeypatch.setattr(utils, "is_linux", lambda: True)
+        monkeypatch.setattr(utils, "is_macos", lambda: False)
+        assert proxy_module._inherited_sockets() == []

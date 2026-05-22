@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
+import time
 from abc import ABC, abstractmethod
 
 import aiohttp
@@ -17,6 +20,7 @@ import aiohttp.web
 import click
 from ddtrace.appsec.ai_guard import Message
 
+from aiguard import utils
 from aiguard.constants import AIGuardConstants
 from aiguard.storage import save_messages
 
@@ -70,11 +74,15 @@ class Proxy:
         host: str,
         port: int,
         handlers: list[ProxyHandler],
+        idle_timeout: float = 0.0,
     ) -> None:
         self._host = host
         self._port = port
         self._handlers = handlers
         self._session: aiohttp.ClientSession | None = None
+        self._idle_timeout = idle_timeout
+        self._last_activity = time.monotonic()
+        self._active_requests = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -98,11 +106,28 @@ class Proxy:
             trust_env=True,
         )
 
+    @aiohttp.web.middleware
+    async def _track_activity(
+        self,
+        request: aiohttp.web.Request,
+        handler,
+    ) -> aiohttp.web.StreamResponse:
+        self._last_activity = time.monotonic()
+        self._active_requests += 1
+        try:
+            return await handler(request)
+        finally:
+            self._active_requests -= 1
+            self._last_activity = time.monotonic()
+
     def build_app(self) -> aiohttp.web.Application:
         """Build the aiohttp Application. Tests mount this on a TestServer."""
         if self._session is None:
             self._session = self._open_session()
-        app = aiohttp.web.Application(client_max_size=0)
+        app = aiohttp.web.Application(
+            client_max_size=0,
+            middlewares=[self._track_activity],
+        )
         app.router.add_route("*", "/{path_info:.*}", self._handle)
 
         async def _close_session(_app: aiohttp.web.Application) -> None:
@@ -116,18 +141,53 @@ class Proxy:
         app = self.build_app()
         runner = aiohttp.web.AppRunner(app)
         await runner.setup()
-        site = aiohttp.web.TCPSite(runner, self._host, self._port)
-        await site.start()
+        sites = await self._start_sites(runner)
+        bind_summary = ", ".join(_describe_site(s) for s in sites)
         logger.info(
-            "proxy listening %s:%d (handlers: %s)",
-            self._host,
-            self._port,
+            "proxy listening %s (handlers: %s)",
+            bind_summary,
             ", ".join(f"{h.agent()}->{h.upstream()}" for h in self._handlers) or "<none>",
         )
         try:
-            await asyncio.Event().wait()
+            await self._serve_until_idle()
         finally:
             await runner.cleanup()
+
+    async def _start_sites(self, runner: aiohttp.web.AppRunner) -> list[aiohttp.web.BaseSite]:
+        """Use sockets handed in by launchd / systemd if any, else bind ourselves."""
+        sites: list[aiohttp.web.BaseSite] = []
+        for sock in _inherited_sockets():
+            sock.setblocking(False)
+            site = aiohttp.web.SockSite(runner, sock)
+            await site.start()
+            sites.append(site)
+        if sites:
+            return sites
+        site = aiohttp.web.TCPSite(runner, self._host, self._port)
+        await site.start()
+        return [site]
+
+    async def _serve_until_idle(self) -> None:
+        """Block forever, or until ``idle_timeout`` seconds pass with no traffic."""
+        if self._idle_timeout <= 0:
+            await asyncio.Event().wait()
+            return
+        # Poll often enough to react within ~10% of the configured timeout, but
+        # never busy-loop (≥1s) and never hold up shutdown for more than a
+        # minute on long timeouts.
+        check_interval = max(1.0, min(self._idle_timeout / 10.0, 60.0))
+        while True:
+            await asyncio.sleep(check_interval)
+            if self._active_requests > 0:
+                continue
+            idle = time.monotonic() - self._last_activity
+            if idle >= self._idle_timeout:
+                logger.info(
+                    "idle for %.0fs (>= %.0fs), shutting down",
+                    idle,
+                    self._idle_timeout,
+                )
+                return
 
     # ── Request handling ──────────────────────────────────────────────────────
 
@@ -249,6 +309,85 @@ def _is_hook_request(request: aiohttp.web.Request) -> bool:
     return "ai-guard-cli" in user_agent
 
 
+def _describe_site(site: aiohttp.web.BaseSite) -> str:
+    try:
+        return site.name
+    except NotImplementedError:
+        return type(site).__name__
+
+
+def _inherited_sockets() -> list[socket.socket]:
+    """Return listening sockets handed to us by the init system, if any.
+
+    systemd uses the ``LISTEN_FDS`` protocol — file descriptors 3..3+N are
+    pre-bound listening sockets when ``LISTEN_PID`` matches our pid. launchd
+    on macOS hands sockets back through ``launch_activate_socket`` in
+    libSystem; we look up the ``"Listener"`` entry from the plist.
+    """
+    if utils.is_linux():
+        return _systemd_activate_socket()
+
+    if utils.is_macos():
+        return _launchd_activate_socket("Listener")
+
+    return []
+
+
+def _systemd_activate_socket() -> list[socket.socket]:
+    if os.environ.get("LISTEN_PID") == str(os.getpid()):
+        try:
+            n = int(os.environ.get("LISTEN_FDS", "0"))
+        except ValueError:
+            n = 0
+        return [socket.socket(fileno=fd) for fd in range(3, 3 + n)]
+    else:
+        return []
+
+
+def _launchd_activate_socket(name: str) -> list[socket.socket]:
+    """Retrieve listening sockets registered for ``name`` in the launchd plist.
+
+    Wraps ``launch_activate_socket(3)`` via ctypes — we don't want a hard
+    dependency on a third-party launchd binding just to read a single fd. If
+    launchd didn't hand us anything (foreground run, not socket-activated),
+    the call returns ``ENOENT`` and we treat that as "no inherited socket".
+    """
+    import ctypes.util
+
+    libname = ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib"
+    try:
+        libsys = ctypes.CDLL(libname)
+    except OSError:
+        return []
+
+    libsys.launch_activate_socket.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    libsys.launch_activate_socket.restype = ctypes.c_int
+
+    fds_ptr = ctypes.POINTER(ctypes.c_int)()
+    count = ctypes.c_size_t(0)
+    rc = libsys.launch_activate_socket(
+        name.encode("utf-8"),
+        ctypes.byref(fds_ptr),
+        ctypes.byref(count),
+    )
+    if rc != 0 or not fds_ptr:
+        return []
+
+    socks = [socket.socket(fileno=fds_ptr[i]) for i in range(count.value)]
+
+    # `fds_ptr` was allocated by launchd with `malloc`; free it.
+    libc_name = ctypes.util.find_library("c") or "/usr/lib/libc.dylib"
+    try:
+        ctypes.CDLL(libc_name).free(fds_ptr)
+    except OSError:
+        pass
+    return socks
+
+
 # ── CLI group ─────────────────────────────────────────────────────────────────
 
 
@@ -282,7 +421,17 @@ def _is_hook_request(request: aiohttp.web.Request) -> bool:
     envvar="DD_AI_GUARD_BLOCK",
     help="Block requests/responses when AI Guard flags them.",
 )
-def proxy(host: str, port: int, anthropic_upstream: str, block: bool) -> None:
+@click.option(
+    "--idle-timeout",
+    default=AIGuardConstants.PROXY_IDLE_TIMEOUT_DEFAULT,
+    show_default=True,
+    type=int,
+    envvar="DD_AI_GUARD_PROXY_IDLE_TIMEOUT",
+    help="Shut down after N seconds with no requests. 0 keeps the proxy "
+    "running forever. Pair with socket activation (launchd/systemd) so the "
+    "init system re-launches on demand.",
+)
+def proxy(host: str, port: int, anthropic_upstream: str, block: bool, idle_timeout: int) -> None:
     """Transparent HTTP proxy that inspects LLM traffic in real time.
 
     Sits between the agent and the upstream API, evaluating every
@@ -299,4 +448,11 @@ def proxy(host: str, port: int, anthropic_upstream: str, block: bool) -> None:
     from aiguard.claude.proxy import ClaudeProxy
 
     handlers = [ClaudeProxy(anthropic_upstream, block)]
-    asyncio.run(Proxy(host=host, port=port, handlers=handlers).run())
+    asyncio.run(
+        Proxy(
+            host=host,
+            port=port,
+            handlers=handlers,
+            idle_timeout=float(idle_timeout),
+        ).run()
+    )

@@ -120,9 +120,67 @@ esac
 ARTIFACT="ai-guard-${os}-${arch}"
 ok "$os $arch"
 
+# --- preflight ---------------------------------------------------------------
+# Validate required tools upfront so the user sees every missing dependency at
+# once rather than discovering them one failed step at a time.
+
+section "Check requirements"
+
+missing=0
+
+require() {
+    # require <command> [<context>]
+    name="$1"; ctx="${2:-}"
+    if command -v "$name" >/dev/null 2>&1; then
+        ok "$name"
+        return
+    fi
+    if [ -n "$ctx" ]; then
+        err "$name not found ($ctx)"
+    else
+        err "$name not found"
+    fi
+    missing=$((missing + 1))
+}
+
+require_any() {
+    # require_any <out_var> <label> <cmd1> [<cmd2> ...]
+    # On success, stores the resolved executable name in <out_var> so the
+    # call sites below can dispatch without re-probing the PATH.
+    out="$1"; label="$2"; shift 2
+    for cmd in "$@"; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            ok "$label: $cmd"
+            eval "$out=\$cmd"
+            return
+        fi
+    done
+    err "$label not found (need one of: $*)"
+    missing=$((missing + 1))
+}
+
+# Downloader and checksum tools are only used when fetching the released
+# binary; the LOCAL_BINARY shortcut skips both code paths.
+if [ -z "$LOCAL_BINARY" ]; then
+    require_any HTTP_TOOL "HTTP downloader" curl wget
+    require_any SHA_TOOL  "SHA-256 verifier" sha256sum shasum
+    require mktemp
+fi
+
+# The handoff to `ai-guard ${MODE}` manages a per-user service, so the
+# platform's service tool must be present.
+case "$os" in
+    linux) require systemctl "ai-guard runs as a systemd --user service" ;;
+    macos) require launchctl "ai-guard runs as a launchd user agent" ;;
+esac
+
+if [ "$missing" -gt 0 ]; then
+    die "$missing required tool(s) missing — install them and re-run"
+fi
+
 # --- local binary shortcut ---------------------------------------------------
 if [ -n "$LOCAL_BINARY" ]; then
-    section "Use local binary"
+    section "Local binary"
     [ -f "$LOCAL_BINARY" ] || die "AI_GUARD_BINARY does not point to a file: $LOCAL_BINARY"
     mkdir -p "$BIN_DIR"
     cp "$LOCAL_BINARY" "${BIN_DIR}/ai-guard"
@@ -144,13 +202,11 @@ section "Resolve release version"
 
 if [ "$VERSION" = "latest" ]; then
     API_URL="https://api.github.com/repos/${REPO}/releases/latest"
-    if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -fsSL "$API_URL" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
-    elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "$API_URL" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
-    else
-        die "neither curl nor wget is available"
-    fi
+    case "$HTTP_TOOL" in
+        curl) RESPONSE=$(curl -fsSL "$API_URL") ;;
+        wget) RESPONSE=$(wget -qO- "$API_URL") ;;
+    esac
+    VERSION=$(printf '%s\n' "$RESPONSE" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     if [ -z "$VERSION" ]; then
         die "could not determine latest release; try AI_GUARD_VERSION=vX.Y.Z"
     fi
@@ -168,13 +224,10 @@ BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
 download() {
     url="$1"; dest="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --proto '=https' --tlsv1.2 -o "$dest" "$url"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$dest" "$url"
-    else
-        die "neither curl nor wget is available"
-    fi
+    case "$HTTP_TOOL" in
+        curl) curl -fL --proto '=https' --tlsv1.2 -o "$dest" "$url" ;;
+        wget) wget -qO "$dest" "$url" ;;
+    esac
 }
 
 action "fetching $ARTIFACT"
@@ -185,13 +238,10 @@ download "${BASE}/${ARTIFACT}.sha256" "${TMP}/${ARTIFACT}.sha256"
 # `<hash>  <filename>` format, which both sha256sum and shasum understand.
 (
     cd "$TMP"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c "${ARTIFACT}.sha256" >/dev/null
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 -c "${ARTIFACT}.sha256" >/dev/null
-    else
-        die "no SHA-256 tool available (need sha256sum or shasum)"
-    fi
+    case "$SHA_TOOL" in
+        sha256sum) sha256sum -c "${ARTIFACT}.sha256" >/dev/null ;;
+        shasum)    shasum -a 256 -c "${ARTIFACT}.sha256" >/dev/null ;;
+    esac
 )
 ok "checksum verified"
 

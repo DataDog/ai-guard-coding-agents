@@ -35,6 +35,7 @@ logger = logging.getLogger("ai_guard")
 
 _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
+
 def _session_file(agent: str, session_id: str) -> Path | None:
     """Return the absolute path of a session's JSON file.
 

@@ -204,7 +204,6 @@ def prompt_with_value(label: str, value: str) -> str:
     finally:
         readline.set_startup_hook()
 
+
 def prompt_with_default(label: str, default_value: str | None) -> str:
     return click.prompt(label, default=default_value, show_default=True)
-
-

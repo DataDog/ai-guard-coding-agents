@@ -21,42 +21,52 @@ attached.
 
 ## Installation
 
-### Linux
+A single command bootstraps the CLI on Linux and macOS — it downloads the latest signed binary, verifies its SHA-256
+checksum, and registers a per-user background service. Everything lives under `$HOME`: no root, no `sudo`, no
+system-wide changes.
 
-Supported: `x86_64` and `arm64`. Requires `curl` (or `wget`), `sha256sum` (or `shasum`), and a user systemd instance (
-`systemctl --user`).
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-hooks/main/installer/install.sh | sh
-```
-
-### macOS
-
-Supported: Apple Silicon (`arm64`). Requires `curl` and `shasum` (both ship with macOS).
+### Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-hooks/main/installer/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/installer/install.sh | sh
 ```
 
-### Windows
+Windows support is coming via `install.ps1`.
 
-Coming soon via `install.ps1`.
+### Supported platforms
 
-### What gets modified
+| Platform | Architectures           | Background service       |
+|----------|-------------------------|--------------------------|
+| Linux    | `x86_64`, `arm64`       | `systemd --user` unit    |
+| macOS    | Apple Silicon (`arm64`) | `launchd` LaunchAgent    |
 
-| Path                                                  | Purpose                                                         | When            | Agent    |
-|-------------------------------------------------------|-----------------------------------------------------------------|-----------------|----------|
-| `~/.local/bin/ai-guard`                               | The CLI binary.                                                 | `linux` `macOS` | `*`      |
-| `~/.local/bin/ai-guard-service`                       | Service wrapper that launchd/systemd execs.                     | `linux` `macOS` | `*`      |
-| `~/.ai_guard/config.env`                              | Configured values (mode `0600`).                                | `linux` `macOS` | `*`      |
-| `~/.ai_guard/backups/`                                | Pre-install copies of every file the installer touches.         | `linux` `macOS` | `*`      |
-| `~/.ai_guard/ai_guard.log`                            | Rotating application log from the tool.                         | `linux` `macOS` | `*`      |
-| `~/.ai_guard/ai_guard_service.log`                    | stdout/stderr captured by launchd/systemd.                      | `linux` `macOS` | `*`      |
-| `~/.config/systemd/user/ai-guard.service`             | systemd `--user` unit, enabled and started.                     | `linux`         | `*`      |
-| `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist` | launchd `LaunchAgent`, loaded with `launchctl`.                 | `macOS`         | `*`      |
-| `~/.claude/settings.json`                             | Hook block added under `hooks.*` plus `env.ANTHROPIC_BASE_URL`. | `linux` `macOS` | `Claude` |
+### Requirements
 
-Nothing is written outside `$HOME`. No root, no `sudo`, no system-wide service.
+The bootstrap script checks for these upfront and exits with a clear error if any are missing.
+
+- **HTTP downloader** — `curl` or `wget`
+- **Checksum tool** — `sha256sum` or `shasum`
+- **Service manager** — `systemctl --user` on Linux, `launchctl` on macOS
+
+### What gets installed
+
+Every path the installer creates or modifies is listed below — nothing else on your machine is touched.
+
+| Path                                                  | Purpose                                                   | OS      | Agent         |
+|-------------------------------------------------------|-----------------------------------------------------------|---------|---------------|
+| `~/.local/bin/ai-guard`                               | The CLI binary.                                           | `*`     | `*`           |
+| `~/.local/bin/ai-guard-service`                       | Wrapper script invoked by launchd / systemd.              | `*`     | `*`           |
+| `~/.ai_guard/config.env`                              | Persisted configuration values (mode `0600`).             | `*`     | `*`           |
+| `~/.ai_guard/ai_guard.log`                            | Rotating application log.                                 | `*`     | `*`           |
+| `~/.config/systemd/user/ai-guard.socket`              | Listening socket, enabled with `systemctl --user`.        | `linux` | `*`           |
+| `~/.config/systemd/user/ai-guard.service`             | Service activated on demand by `ai-guard.socket`.         | `linux` | `*`           |
+| `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist` | LaunchAgent loaded via `launchctl bootstrap`.             | `macOS` | `*`           |
+| `~/.claude/settings.json`                             | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`. | `*`     | `Claude Code` |
+
+Service stdout and stderr go to the platform's native log facility:
+
+- Linux (journald) — `journalctl --user -u ai-guard.service`
+- macOS (unified log) — `log show --predicate 'eventMessage CONTAINS "ai-guard"'`
 
 ### Uninstall
 
@@ -64,9 +74,8 @@ Nothing is written outside `$HOME`. No root, no `sudo`, no system-wide service.
 ai-guard uninstall
 ```
 
-This stops and unregisters the service, restores `~/.claude/settings.json` from the backup, and removes config, backups,
-session history, the service unit, the wrapper, and the binary. Only `ai_guard.log*` and `ai_guard_service.log*` remain
-under `~/.ai_guard/` so you can keep a forensic trail.
+Stops and unregisters the service, restores the original coding agent config, and removes all AI Guard artifacts.
+`~/.ai_guard/ai_guard.log*` is preserved as a forensic trail.
 
 ## Contributing
 

@@ -498,12 +498,21 @@ class TestService:
             LABEL="com.datadoghq.ai-guard",
             WRAPPER="/home/u/.local/bin/ai-guard-service",
             HOME="/home/u",
+            SOCKET_NAME="Listener",
+            HOST="127.0.0.1",
+            PORT="29279",
         )
         assert "<key>Label</key>" in out
         assert "com.datadoghq.ai-guard" in out
         assert "/home/u/.local/bin/ai-guard-service" in out
-        assert "<key>RunAtLoad</key>" in out
-        assert "<true/>" in out
+        # Socket-activated: launchd opens the port and hands it to the
+        # service on demand. No RunAtLoad / KeepAlive should remain.
+        assert "<key>Sockets</key>" in out
+        assert "<key>Listener</key>" in out
+        assert "<string>127.0.0.1</string>" in out
+        assert "<string>29279</string>" in out
+        assert "RunAtLoad" not in out
+        assert "KeepAlive" not in out
         # No log-file paths land in the plist anymore — the wrapper pipes
         # through ``logger -t ai-guard`` into the unified log.
         assert "StandardOutPath" not in out
@@ -513,13 +522,29 @@ class TestService:
         out = render(
             "ai-guard.service.in",
             WRAPPER="/home/u/.local/bin/ai-guard-service",
+            SOCKET_NAME="ai-guard.socket",
         )
         assert "ExecStart=/home/u/.local/bin/ai-guard-service" in out
         # journald captures stdout/stderr — no on-disk log file path.
         assert "StandardOutput=journal" in out
         assert "Restart=on-failure" in out
-        assert "WantedBy=default.target" in out
+        # Service is socket-activated; the socket unit is what gets enabled,
+        # so the service no longer carries [Install]/WantedBy.
+        assert "Requires=ai-guard.socket" in out
+        assert "WantedBy" not in out
         assert "append:" not in out
+
+    def test_systemd_socket_template_renders(self) -> None:
+        out = render(
+            "ai-guard.socket.in",
+            HOST="127.0.0.1",
+            PORT="29279",
+            SERVICE_NAME="ai-guard.service",
+        )
+        assert "[Socket]" in out
+        assert "ListenStream=127.0.0.1:29279" in out
+        assert "Service=ai-guard.service" in out
+        assert "WantedBy=sockets.target" in out
 
     def test_launchd_install_writes_no_log_path(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -577,9 +602,12 @@ class TestService:
         monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
         systemd_user.install()
 
+        # Both units land on disk, and systemd enables the SOCKET (not the
+        # service) so requests trigger socket activation.
         assert paths.systemd_unit_path().exists()
+        assert paths.systemd_socket_path().exists()
         assert ["systemctl", "--user", "daemon-reload"] in calls
-        assert ["systemctl", "--user", "enable", "--now", "ai-guard.service"] in calls
+        assert ["systemctl", "--user", "enable", "--now", "ai-guard.socket"] in calls
 
     def test_launchd_install_calls_launchctl(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch

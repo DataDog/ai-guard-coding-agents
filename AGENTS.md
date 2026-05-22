@@ -14,7 +14,7 @@ Both flows ultimately land in a single `ProxyHandler` (`ClaudeProxy`) that does 
 ## Repository layout
 
 ```
-ai-guard-hooks/
+/
 ├── src/aiguard/
 │   ├── cli.py                      # Top-level Click CLI: `proxy`, `hook` commands
 │   ├── constants.py                # AIGuardConstants — span names + tag keys
@@ -177,7 +177,7 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 cp .env.example .env       # set DD_API_KEY, DD_APP_KEY
 docker compose build
 docker compose up -d
-docker exec -ti ai-guard-hooks-claude-1 claude
+docker exec -ti ai-guard-coding-agents-claude-1 claude
 ```
 
 mitmproxy UI: `http://localhost:8081` (password: `ai_guard`). Claude's traffic and AI Guard `/api/v2/ai-guard/evaluate` calls are all visible there.

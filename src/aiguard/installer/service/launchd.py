@@ -32,6 +32,9 @@ def install() -> None:
             LABEL=AIGuardConstants.LAUNCHD_LABEL,
             WRAPPER=str(paths.wrapper_path()),
             HOME=str(paths.home()),
+            SOCKET_NAME=AIGuardConstants.LAUNCHD_SOCKET_NAME,
+            HOST=AIGuardConstants.PROXY_HOST_DEFAULT,
+            PORT=str(AIGuardConstants.PROXY_PORT_DEFAULT),
         ),
         encoding="utf-8",
     )
@@ -73,7 +76,7 @@ def is_running() -> bool:
 
 def log_hint() -> str:
     """User-facing command for tailing the service log."""
-    return 'log show --predicate \'eventMessage CONTAINS "ai-guard"\' --info --last 1h'
+    return "log show --predicate 'eventMessage CONTAINS \"ai-guard\"' --info --last 1h"
 
 
 def tail_log(lines: int = 50) -> tuple[str, str]:

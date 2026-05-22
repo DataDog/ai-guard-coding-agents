@@ -1,6 +1,7 @@
 [Unit]
 Description=Datadog AI Guard proxy for coding agents
-After=network.target
+Requires=${SOCKET_NAME}
+After=network.target ${SOCKET_NAME}
 
 [Service]
 Type=simple
@@ -10,6 +11,3 @@ RestartSec=2
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ai-guard
-
-[Install]
-WantedBy=default.target

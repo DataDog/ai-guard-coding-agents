@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from aiguard import __version__, paths, utils
+from aiguard import paths, utils
 from aiguard.claude.installer import ClaudeInstaller
 from aiguard.constants import AIGuardConstants
 from aiguard.installer import ui
@@ -20,9 +20,12 @@ from aiguard.installer.service import manager as service_manager
 from aiguard.storage import load_config, save_config
 from aiguard.utils import wait_ready
 
-
 SUPPORTED_AGENTS: list[AgentInstaller] = [ClaudeInstaller()]
 
+# List of fields divided by tiers:
+# 1 -> should be always prompted unless non-interactive
+# 2 -> should be prompted only in advanced mode
+# 3 -> should never be prompted to users
 FIELDS: list[Field] = [
     Field("DD_SITE", "Site", default="datadoghq.com", tier=1),
     Field("DD_API_KEY", "API key", default=None, secret=True, tier=1),
@@ -30,14 +33,38 @@ FIELDS: list[Field] = [
     Field("DD_ENV", "Environment", default="prod", tier=1),
     Field("DD_SERVICE", "Service name", default=None, tier=1),
     Field("DD_VERSION", "Service version", default="1.0", tier=1),
-    Field("DD_AI_GUARD_BLOCK", "Block on unsafe verdict (else observe-only)", default="True", tier=2),
-    Field("DD_AI_GUARD_PROXY_HOST", "Proxy bind host",default=AIGuardConstants.PROXY_HOST_DEFAULT, tier=2),
-    Field("DD_AI_GUARD_PROXY_PORT", "Proxy bind port", default=str(AIGuardConstants.PROXY_PORT_DEFAULT), tier=2),
+    Field(
+        "DD_AI_GUARD_BLOCK", "Block on unsafe verdict (else observe-only)", default="True", tier=2
+    ),
+    Field(
+        "DD_AI_GUARD_PROXY_HOST",
+        "Proxy bind host",
+        default=AIGuardConstants.PROXY_HOST_DEFAULT,
+        tier=2,
+    ),
+    Field(
+        "DD_AI_GUARD_PROXY_PORT",
+        "Proxy bind port",
+        default=str(AIGuardConstants.PROXY_PORT_DEFAULT),
+        tier=2,
+    ),
     Field("DD_TRACE_ENABLED", "Enable tracing", default="True", tier=3),
     Field("DD_AI_GUARD_ENABLED", "Enable AI Guard", default="True", tier=3),
-    Field("DD_INSTRUMENTATION_TELEMETRY_ENABLED", "Enable instrumentation telemetry", default="False", tier=3),
+    Field(
+        "DD_INSTRUMENTATION_TELEMETRY_ENABLED",
+        "Enable instrumentation telemetry",
+        default="False",
+        tier=3,
+    ),
     Field("_DD_APM_TRACING_AGENTLESS_ENABLED", "Enable agentless tracer", default="true", tier=3),
+    Field(
+        "DD_AI_GUARD_PROXY_IDLE_TIMEOUT",
+        "Shut down after N seconds with no requests. 0 keeps the LLM proxy running forever",
+        default=str(AIGuardConstants.PROXY_IDLE_TIMEOUT_DEFAULT),
+        tier=3,
+    ),
 ]
+
 
 class MissingRequiredError(RuntimeError):
     def __init__(self, key: str) -> None:
@@ -47,7 +74,8 @@ class MissingRequiredError(RuntimeError):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _find_fields(agents: list[AgentInstaller], tier:int = 1) -> list[Field]:
+
+def _find_fields(agents: list[AgentInstaller], tier: int = 1) -> list[Field]:
     seen: set[str] = set()
     fields: list[Field] = []
     for field in FIELDS:
@@ -61,12 +89,13 @@ def _find_fields(agents: list[AgentInstaller], tier:int = 1) -> list[Field]:
                 seen.add(field.key)
     return fields
 
+
 def _collect_fields(
-        *,
-        advanced: bool,
-        non_interactive: bool,
-        env: dict[str, str],
-        agents: list[AgentInstaller],
+    *,
+    advanced: bool,
+    non_interactive: bool,
+    env: dict[str, str],
+    agents: list[AgentInstaller],
 ) -> dict[str, str]:
     """Return the full config values map, prompting where appropriate."""
     fields = _find_fields(agents, 3)
@@ -86,6 +115,7 @@ def _collect_fields(
             values[field.key] = _prompt(field, env)
 
     return values
+
 
 def _prompt(field: Field, env: dict[str, str]) -> str:
     """Read one :class:`Field` from the user, falling back to its ``env`` value."""
@@ -147,7 +177,7 @@ def _ensure_binary_in_place(c: Console) -> None:
             c,
             Text(
                 "    curl -fsSL https://raw.githubusercontent.com/"
-                "DataDog/ai-guard-hooks/main/installer/install.sh | sh",
+                "DataDog/ai-guard-coding-agents/main/installer/install.sh | sh",
                 style="bold",
             ),
         )
@@ -428,7 +458,7 @@ def uninstall(yes: bool, no_color: bool) -> None:
     if not agent_updates:
         ui.detail(c, "(no installed agents detected)")
 
-    ui.section(c, "Uninstall result")
+    ui.section(c, "Result")
     _purge_state_dir()
     ui.ok(c, "config + backups + session history removed")
 

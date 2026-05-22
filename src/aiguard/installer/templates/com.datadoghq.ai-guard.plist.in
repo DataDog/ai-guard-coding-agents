@@ -8,10 +8,18 @@
     <array>
         <string>${WRAPPER}</string>
     </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
+    <key>Sockets</key>
+    <dict>
+        <key>${SOCKET_NAME}</key>
+        <dict>
+            <key>SockType</key>
+            <string>stream</string>
+            <key>SockNodeName</key>
+            <string>${HOST}</string>
+            <key>SockServiceName</key>
+            <string>${PORT}</string>
+        </dict>
+    </dict>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
