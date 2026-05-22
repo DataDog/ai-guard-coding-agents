@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from ddtrace.appsec.ai_guard import ContentPart, Function, Message, ToolCall
 
-from aiguard import storage
+from aiguard import paths, storage
 
 
 def test_load_returns_empty_when_file_missing(tmp_home: Path) -> None:
@@ -215,3 +215,45 @@ def test_delete_is_noop_when_path_escapes_root(tmp_home: Path) -> None:
     storage.save_messages("claude", "s", [Message(role="user", content="x")])
     storage.delete_messages("claude", "../../escape")  # must not raise nor remove the legit file
     assert storage.load_messages("claude", "s") == [Message(role="user", content="x")]
+
+
+# ── config.env round-trip ─────────────────────────────────────────────────────
+
+
+class TestConfig:
+    def test_round_trip(self, tmp_home: Path) -> None:
+        values = {
+            "DD_API_KEY": "abc123",
+            "DD_APP_KEY": "def456",
+            "DD_SITE": "datadoghq.com",
+            "DD_AI_GUARD_BLOCK": "True",
+        }
+        storage.save_config(values)
+        assert storage.load_config() == values
+
+    def test_file_is_mode_0600(self, tmp_home: Path) -> None:
+        storage.save_config({"DD_API_KEY": "secret"})
+        mode = paths.config_env_path().stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_values_with_special_chars_round_trip(self, tmp_home: Path) -> None:
+        values = {
+            "DD_SITE": "datadoghq.com",
+            "DD_AI_GUARD_TAG": "value with spaces",
+            "DD_AI_GUARD_QUOTE": 'has"double"quotes',
+            "DD_AI_GUARD_DOLLAR": "literal $HOME",
+        }
+        storage.save_config(values)
+        assert storage.load_config() == values
+
+    def test_invalid_key_rejected(self, tmp_home: Path) -> None:
+        with pytest.raises(ValueError):
+            storage.save_config({"lowercase_key": "x"})
+
+    def test_no_temp_file_left_behind_on_success(self, tmp_home: Path) -> None:
+        storage.save_config({"DD_API_KEY": "x"})
+        stragglers = list(paths.state_dir().glob(".config.env.*"))
+        assert stragglers == []
+
+    def test_read_missing_returns_empty(self, tmp_home: Path) -> None:
+        assert storage.load_config() == {}

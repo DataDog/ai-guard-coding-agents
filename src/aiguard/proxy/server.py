@@ -270,7 +270,7 @@ def _is_hook_request(request: aiohttp.web.Request) -> bool:
 )
 @click.option(
     "--anthropic-upstream",
-    default="https://api.anthropic.com",
+    default=AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT,
     show_default=True,
     envvar="DD_AI_GUARD_ANTHROPIC_UPSTREAM",
     help="Anthropic API base URL (used by the Claude handler).",

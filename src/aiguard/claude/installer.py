@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 
-from aiguard.installer import backup, paths
-from aiguard.installer.agent import AgentInstaller, Field, InstallResult, detect_executable
+from aiguard import paths, storage
+from aiguard.constants import AIGuardConstants
+from aiguard.installer.agent import AgentInstaller, Field, detect_executable
+from aiguard.utils import atomic_write
 
 HOOK_EVENTS: tuple[str, ...] = (
     "SessionStart",
@@ -41,28 +42,8 @@ def _hook_block(event: str) -> dict:
 
 
 def build_hooks_section() -> dict:
-    """Return the full ``hooks`` dict ai-guard injects, identical in shape to
-    ``docker/claude/claude-settings.json``."""
+    """Return the full ``hooks`` dict ai-guard injects"""
     return {event: [_hook_block(event)] for event in HOOK_EVENTS}
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".settings.", dir=str(path.parent))
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-        raise
 
 
 def _is_ai_guard_entry(entry: dict) -> bool:
@@ -76,67 +57,26 @@ def _is_ai_guard_entry(entry: dict) -> bool:
 
 
 class ClaudeInstaller(AgentInstaller):
-    name = "claude"
+    name = "Claude Code"
 
-    def __init__(self, settings_path: Path | None = None) -> None:
-        self._settings_path = settings_path or paths.claude_settings_path()
+    def detect(self) -> bool:
+        settings_path = paths.claude_settings_path()
+        return settings_path.exists() or detect_executable("claude") is not None
 
-    @property
-    def settings_path(self) -> Path:
-        return self._settings_path
-
-    def detect(self) -> Path | None:
-        if self._settings_path.exists():
-            return self._settings_path
-        if self._settings_path.parent.exists():
-            return self._settings_path
-        if detect_executable("claude") is not None:
-            return self._settings_path
-        return None
-
-    def _load(self) -> dict:
-        if not self._settings_path.exists():
-            return {}
-        try:
-            return json.loads(self._settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"could not parse {self._settings_path}: {exc.msg} at line {exc.lineno}"
-            ) from exc
-
-    def detect_upstream(self) -> str | None:
-        if not self._settings_path.exists():
-            return None
-        try:
-            data = self._load()
-        except RuntimeError:
-            return None
-        existing = (data.get("env") or {}).get("ANTHROPIC_BASE_URL")
-        return existing or None
-
-    def env_fields(self, detected_upstream: str | None) -> tuple[Field, ...]:
-        # Anthropic-specific upstream URL — only relevant when Claude Code is
-        # detected; with --advanced the user can override the default (either
-        # the chained pre-existing value or the public Anthropic endpoint).
+    def env_fields(self) -> tuple[Field, ...]:
         return (
             Field(
                 "DD_AI_GUARD_ANTHROPIC_UPSTREAM",
                 "Upstream Anthropic endpoint",
-                default=detected_upstream or "https://api.anthropic.com",
+                default=self._detect_upstream() or AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT,
                 tier=2,
             ),
         )
 
-    def install_hooks(self, proxy_url: str) -> InstallResult:
-        existing = self._load()
-        original_base_url = (existing.get("env") or {}).get("ANTHROPIC_BASE_URL")
-        restore_data: dict[str, str] = {}
-        if original_base_url and original_base_url != proxy_url:
-            restore_data["ANTHROPIC_BASE_URL"] = original_base_url
+    def install(self, proxy_url: str) -> list[Path]:
+        original = self._load()
 
-        backup_path = backup.snapshot(self.name, self._settings_path)
-
-        merged_hooks = dict(existing.get("hooks") or {})
+        merged_hooks = dict(original.get("hooks") or {})
         new_hooks = build_hooks_section()
         for event, blocks in new_hooks.items():
             current = list(merged_hooks.get(event) or [])
@@ -145,27 +85,23 @@ class ClaudeInstaller(AgentInstaller):
             current.extend(blocks)
             merged_hooks[event] = current
 
-        env_block = dict(existing.get("env") or {})
+        env_block = dict(original.get("env") or {})
         env_block["ANTHROPIC_BASE_URL"] = proxy_url
 
-        merged = dict(existing)
+        merged = dict(original)
         merged["hooks"] = merged_hooks
         merged["env"] = env_block
 
-        _atomic_write_json(self._settings_path, merged)
+        settings_path = paths.claude_settings_path()
+        atomic_write(settings_path, lambda fh: json.dump(merged, fh, indent=2))
+        return [settings_path]
 
-        return InstallResult(
-            settings_path=self._settings_path,
-            backup_path=backup_path,
-            restore_data=restore_data,
-        )
-
-    def uninstall_hooks(self, restore_data: dict[str, str]) -> None:
-        if not self._settings_path.exists():
-            return
+    def uninstall(self) -> list[Path]:
+        settings_path = paths.claude_settings_path()
+        if not settings_path.exists():
+            return []
 
         data = self._load()
-
         hooks = data.get("hooks")
         if isinstance(hooks, dict):
             for event in list(hooks.keys()):
@@ -179,19 +115,38 @@ class ClaudeInstaller(AgentInstaller):
                     hooks.pop(event, None)
             if not hooks:
                 data.pop("hooks", None)
-            else:
-                data["hooks"] = hooks
 
-        original_base_url = restore_data.get("ANTHROPIC_BASE_URL")
+        # Restore the user's pre-existing upstream if one was captured at install
+        # time (DD_AI_GUARD_ANTHROPIC_UPSTREAM in config.env); otherwise drop the
+        # ANTHROPIC_BASE_URL key we added so the agent goes back to its default.
         env_block = data.get("env")
         if isinstance(env_block, dict) and "ANTHROPIC_BASE_URL" in env_block:
-            if original_base_url:
-                env_block["ANTHROPIC_BASE_URL"] = original_base_url
+            upstream = storage.load_config().get("DD_AI_GUARD_ANTHROPIC_UPSTREAM", "")
+            if upstream and upstream != AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT:
+                env_block["ANTHROPIC_BASE_URL"] = upstream
             else:
                 env_block.pop("ANTHROPIC_BASE_URL", None)
             if not env_block:
                 data.pop("env", None)
-            else:
-                data["env"] = env_block
 
-        _atomic_write_json(self._settings_path, data)
+        atomic_write(settings_path, lambda fh: json.dump(data, fh, indent=2))
+        return [settings_path]
+
+    def _load(self) -> dict:
+        settings_path = paths.claude_settings_path()
+        if not settings_path.exists():
+            return {}
+        try:
+            return json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"could not parse {settings_path}: {exc.msg} at line {exc.lineno}"
+            ) from exc
+
+    def _detect_upstream(self) -> str | None:
+        try:
+            data = self._load()
+        except RuntimeError:
+            return None
+        existing = (data.get("env") or {}).get("ANTHROPIC_BASE_URL")
+        return existing or os.getenv("ANTHROPIC_BASE_URL")

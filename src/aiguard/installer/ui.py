@@ -16,13 +16,19 @@ Style conventions
 * **Hierarchy** — section rule for phase boundaries, two-space indent for
   status lines, four-space indent for sub-detail. Vertical breathing room
   before every phase.
+
+Value entry — :func:`read_secret`, :func:`prompt_with_value`,
+:func:`prompt_with_default`, :func:`mask_secret` — also lives here so every
+piece of user-facing IO (banner, prompts, summaries) shares a single module.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterable
 
+import click
 from rich.align import Align
 from rich.console import Console
 from rich.padding import Padding
@@ -49,18 +55,6 @@ def console(no_color: bool) -> Console:
 
 
 # ── Top-level chrome ──────────────────────────────────────────────────────────
-
-
-def banner(c: Console, title: str, subtitle: str, version: str) -> None:
-    """Big-ish header at the top of every install / uninstall run."""
-    c.print()
-    head = Text()
-    head.append("✦ ", style=ACCENT)
-    head.append(title, style=f"bold {ACCENT}")
-    head.append(f"  v{version}", style="dim")
-    c.print(Padding(head, (0, 2)))
-    c.print(Padding(Text(subtitle, style="dim"), (0, 4)))
-    c.print()
 
 
 def section(c: Console, label: str) -> None:
@@ -160,3 +154,57 @@ def confirm_block(c: Console, intent: str, bullets: list[str]) -> None:
     for b in bullets:
         c.print(Padding(Text(f"• {b}", style="dim"), (0, 0, 0, 4)))
     c.print()
+
+
+# ── Value entry ───────────────────────────────────────────────────────────────
+
+
+def mask_secret(value: str) -> str:
+    """Render ``value`` with all but the last 4 chars replaced by ``*``.
+
+    Always match the original value's length so the user gets a length hint;
+    reveal the last 4 chars only when the value is long enough that they can't
+    be brute-forced back to the full secret.
+    """
+    if len(value) > 8:
+        return "*" * (len(value) - 4) + value[-4:]
+    return "*" * len(value)
+
+
+def read_secret(label: str) -> str:
+    """Prompt for a secret with per-character asterisk echo.
+
+    Uses :mod:`pwinput` on a real TTY (``termios`` on Unix, ``msvcrt`` on
+    Windows). When stdin is not a TTY — tests, ``CliRunner``,
+    ``DD_API_KEY=... | curl … | sh`` pipes — ``pwinput``'s raw-mode call into
+    ``termios.tcgetattr`` would raise; fall back to ``click.prompt`` with
+    ``hide_input=True`` which uses ``getpass`` and works on any stream.
+    """
+    if not sys.stdin.isatty():
+        return click.prompt(label, hide_input=True, confirmation_prompt=False)
+
+    import pwinput
+
+    return pwinput.pwinput(prompt=f"{label}: ", mask="*")
+
+
+def prompt_with_value(label: str, value: str) -> str:
+    # ``readline.redisplay()`` inside the startup hook would double-draw the
+    # line — readline already renders prompt + buffer when the hook returns, so
+    # an explicit redisplay produces the prompt twice on captured/non-ANSI
+    # outputs. Just seed the buffer and let readline display it.
+    try:
+        import readline
+    except ImportError:  # pragma: no cover - Windows or stripped builds
+        return input(label)
+
+    readline.set_startup_hook(lambda: readline.insert_text(value))
+    try:
+        return input(label)
+    finally:
+        readline.set_startup_hook()
+
+def prompt_with_default(label: str, default_value: str | None) -> str:
+    return click.prompt(label, default=default_value, show_default=True)
+
+

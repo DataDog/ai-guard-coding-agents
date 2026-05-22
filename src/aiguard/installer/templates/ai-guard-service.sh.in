@@ -8,4 +8,13 @@ if [ -f "${CONFIG_ENV}" ]; then
     . "${CONFIG_ENV}"
     set +a
 fi
-exec "${BINARY}" proxy
+# On Linux, the systemd unit captures stdout/stderr into journald directly
+# (StandardOutput=journal), so a plain exec is enough. On macOS, launchd has
+# no native log rotation, so we pipe through `logger -t ai-guard` to route
+# output into the unified log (queryable via `log show --predicate
+# 'eventMessage CONTAINS "ai-guard"'`).
+if [ "$$(uname -s)" = "Darwin" ]; then
+    "${BINARY}" proxy 2>&1 | /usr/bin/logger -t ai-guard
+else
+    exec "${BINARY}" proxy
+fi

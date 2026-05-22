@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from aiguard.installer import paths
+from aiguard import paths
 from aiguard.installer.templates import render
 
 

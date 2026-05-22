@@ -7,8 +7,9 @@ Type=simple
 ExecStart=${WRAPPER}
 Restart=on-failure
 RestartSec=2
-StandardOutput=append:${LOG}
-StandardError=append:${LOG}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-guard
 
 [Install]
 WantedBy=default.target
