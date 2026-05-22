@@ -350,7 +350,7 @@ def _resolve_libsystem():
     Returns (launch_fn, free_fn) or (None, None) if anything is missing.
     """
 
-    import ctypes
+    import ctypes.util
 
     libname = ctypes.util.find_library("System") or "/usr/lib/libSystem.B.dylib"
     try:
