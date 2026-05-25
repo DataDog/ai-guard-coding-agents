@@ -112,6 +112,7 @@ is ready for `1.0.0`, cut it explicitly with a `Release-As: 1.0.0` trailer
 in any commit body and merge to `main`.
 
 Manual recovery: if `release-please` is broken, you can still cut a release
-by hand — push a `v*` tag (`git tag v0.2.0 && git push origin v0.2.0`),
-create the GitHub Release manually, and `build.yml`'s tag-push trigger
-will build and attach the assets.
+by hand — `git tag v0.2.0 && git push origin v0.2.0`. The `v*` tag-push
+trigger in `build.yml` runs the build, auto-creates the GitHub Release
+with `gh release create --generate-notes` if one doesn't already exist,
+and attaches the platform tarballs.

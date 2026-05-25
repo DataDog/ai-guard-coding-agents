@@ -137,8 +137,19 @@ jobs:
         working-directory: dist
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+        # release-please creates the Release before this job runs, so the
+        # view check normally succeeds and the create branch is a no-op.
+        # For the manual recovery path (`git push origin vX.Y.Z`) no
+        # Release exists yet — the first matrix runner creates it with
+        # auto-generated notes; later runners see it and skip. `|| true`
+        # tolerates the race where two runners try to create at once.
         run: |
-          gh release upload "${{ steps.release_tag.outputs.tag }}" \
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" --generate-notes || true
+          fi
+          gh release upload "$RELEASE_TAG" \
             "${{ matrix.artifact }}.tar.gz" \
             "${{ matrix.artifact }}.tar.gz.sha256" \
             --clobber --repo "$GITHUB_REPOSITORY"
@@ -149,8 +160,16 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
         run: |
-          gh release upload "${{ steps.release_tag.outputs.tag }}" `
+          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" `
+              --title "$env:RELEASE_TAG" --generate-notes
+            # tolerate race with another matrix runner that just created it
+            $LASTEXITCODE = 0
+          }
+          gh release upload "$env:RELEASE_TAG" `
             "${{ matrix.artifact }}.zip" `
             "${{ matrix.artifact }}.zip.sha256" `
             --clobber --repo "$env:GITHUB_REPOSITORY"
