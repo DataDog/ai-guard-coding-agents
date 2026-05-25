@@ -167,13 +167,13 @@ require_any() {
 }
 
 # Downloader and checksum tools are only used when fetching the released
-# bundle; the LOCAL_BUNDLE shortcut skips both code paths. ``tar`` is needed
-# either way to know we can lay the bundle out.
+# bundle; the LOCAL_BUNDLE shortcut skips both code paths. ``tar`` and
+# ``mktemp`` are needed either way to lay the bundle out.
 if [ -z "$LOCAL_BUNDLE" ]; then
     require_any HTTP_TOOL "HTTP downloader" curl wget
     require_any SHA_TOOL  "SHA-256 verifier" sha256sum shasum
-    require mktemp
 fi
+require mktemp
 require tar
 
 # The handoff to `ai-guard ${MODE}` manages a per-user service, so the

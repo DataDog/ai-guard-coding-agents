@@ -38,7 +38,7 @@ class AIGuardConstants(object):
     PROXY_HOST_DEFAULT = "127.0.0.1"
     PROXY_PORT_DEFAULT = 29279
     PROXY_URL_DEFAULT = f"http://{PROXY_HOST_DEFAULT}:{PROXY_PORT_DEFAULT}"
-    PROXY_IDLE_TIMEOUT_DEFAULT = 300
+    PROXY_IDLE_TIMEOUT_DEFAULT = 0 # run forever
 
     # Upstream defaults
     ANTHROPIC_UPSTREAM_DEFAULT = "https://api.anthropic.com"

@@ -58,8 +58,8 @@ FIELDS: list[Field] = [
     Field("_DD_APM_TRACING_AGENTLESS_ENABLED", "Enable agentless tracer", default="true", tier=3),
     Field(
         "DD_AI_GUARD_PROXY_IDLE_TIMEOUT",
-        "Shut down after N seconds with no requests. 0 keeps the LLM proxy running forever",
-        default=str(AIGuardConstants.PROXY_IDLE_TIMEOUT_DEFAULT),
+        "Shut down after N seconds with no requests (0 keeps the LLM proxy running forever)",
+        default="300",
         tier=3,
     ),
     Field(
