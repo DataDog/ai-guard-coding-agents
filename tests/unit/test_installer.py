@@ -536,7 +536,7 @@ class TestService:
         assert "RunAtLoad" not in out
         assert "KeepAlive" not in out
         # No log-file paths land in the plist — service output is captured by
-        # the proxy's own rotating logger at ``~/.ai_guard/ai_guard.log``.
+        # the proxy's own rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
         assert "StandardOutPath" not in out
         assert "StandardErrorPath" not in out
 
@@ -548,7 +548,7 @@ class TestService:
         )
         assert "ExecStart=/home/u/.local/bin/ai-guard-service" in out
         # No StandardOutput/StandardError stanza — service output is captured
-        # by the proxy's own rotating logger at ``~/.ai_guard/ai_guard.log``.
+        # by the proxy's own rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
         assert "StandardOutput" not in out
         assert "StandardError" not in out
         assert "Restart=on-failure" in out
@@ -576,7 +576,7 @@ class TestService:
         """Regression: the plist must not point launchd at any on-disk log file.
 
         Service output is captured by the proxy's own rotating logger at
-        ``~/.ai_guard/ai_guard.log``. A bare log file path in the plist would
+        ``$XDG_STATE_HOME/ai-guard/ai-guard.log``. A bare log file path in the plist would
         re-introduce a custom rotation surface we've explicitly removed.
         """
         from aiguard.installer.service import launchd
@@ -608,7 +608,7 @@ class TestService:
 
         unit = paths.systemd_unit_path().read_text()
         # No log routing in the unit — output is captured by the proxy's own
-        # rotating logger at ``~/.ai_guard/ai_guard.log``.
+        # rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
         assert "StandardOutput" not in unit
         assert "StandardError" not in unit
         assert str(paths.log_file_path()) not in unit
@@ -732,7 +732,7 @@ class TestCli:
         """After uninstall, only the proxy's rotating app log survives on disk.
 
         The wrapper ``exec``s the proxy with no extra log routing, so the
-        rotating app log at ``~/.ai_guard/ai_guard.log`` is the only on-disk
+        rotating app log at ``$XDG_STATE_HOME/ai-guard/ai-guard.log`` is the only on-disk
         surface either platform leaves behind.
         """
         monkeypatch.setenv("DD_API_KEY", "k")

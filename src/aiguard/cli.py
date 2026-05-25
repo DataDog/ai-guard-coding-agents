@@ -16,6 +16,7 @@ from pathlib import Path
 
 import click
 
+from aiguard import paths
 from aiguard.hooks.hooks import hook
 
 for _key in [k for k in os.environ if k.startswith("OTEL_")]:
@@ -78,7 +79,7 @@ class _Group(click.Group):
 @click.option(
     "--log-file",
     envvar="DD_AI_GUARD_LOG_FILE",
-    default=lambda: str(Path.home() / ".ai_guard" / "ai_guard.log"),
+    default=lambda: str(paths.log_file_path()),
     show_default=True,
     help="Path to log file.",
 )

@@ -16,16 +16,30 @@ def home() -> Path:
     return Path.home()
 
 
+def config_dir() -> Path:
+    """``$XDG_CONFIG_HOME/ai-guard`` — user-facing configuration."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "ai-guard"
+
+
 def state_dir() -> Path:
-    return Path(os.environ.get("DD_AI_GUARD_HOME") or (Path.home() / ".ai_guard"))
+    """``$XDG_STATE_HOME/ai-guard`` — runtime state (logs + session history).
+
+    ``DD_AI_GUARD_HOME`` overrides this wholesale; tests use it to point
+    storage at a sandboxed tmpdir.
+    """
+    if explicit := os.environ.get("DD_AI_GUARD_HOME"):
+        return Path(explicit)
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "ai-guard"
 
 
 def config_env_path() -> Path:
-    return state_dir() / "config.env"
+    return config_dir() / "config.env"
 
 
 def log_file_path() -> Path:
-    return state_dir() / "ai_guard.log"
+    return state_dir() / "ai-guard.log"
 
 
 def local_bin_dir() -> Path:

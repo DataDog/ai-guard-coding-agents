@@ -141,7 +141,7 @@ def proxy_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[dict[str, Any]]:
     port = _free_port()
-    log_file = tmp_path / "ai_guard.log"
+    log_file = tmp_path / "ai-guard.log"
     home = tmp_path / "home"
     home.mkdir()
 
@@ -247,7 +247,8 @@ def test_binary_passthrough_persists_messages(
     # Upstream Anthropic was called once on the right path.
     assert [c["path"] for c in anthropic_mock["calls"]] == ["/v1/messages"]
 
-    # The binary persisted the conversation under ~/.ai_guard/claude/<session>.json.
+    # The binary persisted the conversation under
+    # $DD_AI_GUARD_HOME/claude/<session>.json.
     path = _wait_for_storage(proxy_process["home"], "claude", session_id)
     assert path.exists(), f"expected session file at {path}"
 

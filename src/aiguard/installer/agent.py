@@ -15,7 +15,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Field:
     """A single configuration value the installer collects and writes to
-    ``~/.ai_guard/config.env``.
+    ``$XDG_CONFIG_HOME/ai-guard/config.env``.
 
     Lives in this lightweight module so agent plugins can declare ``Field``
     instances via :meth:`AgentInstaller.env_fields` without importing the

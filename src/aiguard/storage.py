@@ -6,9 +6,9 @@
 
 """Per-session conversation message storage.
 
-Layout: ``~/.ai_guard/<agent>/<session_id>.json`` — one JSON array of Message dicts
-per session, in observation order. The root can be overridden via
-``DD_AI_GUARD_HOME``.
+Layout: ``$XDG_STATE_HOME/ai-guard/<agent>/<session_id>.json`` — one JSON array
+of Message dicts per session, in observation order. The state root can be
+overridden via ``DD_AI_GUARD_HOME``.
 
 ``session_id`` and ``agent`` flow in from request metadata that the proxy does
 not control, so the resolved path is checked to stay within the storage root;

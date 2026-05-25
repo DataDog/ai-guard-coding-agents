@@ -300,7 +300,10 @@ def install(
         ui.err(c, f"unsupported platform: {sys.platform}")
         sys.exit(1)
 
-    # Make sure the state + bin dirs exist before we ask the user for anything.
+    # Make sure the config, state, and bin dirs exist before we ask the user
+    # for anything. Config and state live under XDG_CONFIG_HOME and
+    # XDG_STATE_HOME respectively.
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
     paths.state_dir().mkdir(parents=True, exist_ok=True)
     paths.local_bin_dir().mkdir(parents=True, exist_ok=True)
 
@@ -416,9 +419,9 @@ def uninstall(yes: bool, no_color: bool) -> None:
         bullets = [
             "Stop and remove the AI Guard service",
             "Remove AI Guard from detected agent configs",
-            "Delete ~/.ai_guard/config.env and session history",
+            f"Delete {paths.config_env_path()} and session history",
             "Delete the binary at ~/.local/bin/ai-guard",
-            "Keep ~/.ai_guard/ai_guard.log* (proxy logs)",
+            f"Keep {paths.log_file_path()}* (proxy logs)",
         ]
         ui.confirm_block(c, "About to:", bullets)
         if not click.confirm("Continue?", default=False):
@@ -497,15 +500,19 @@ def _remove_bundle(bundle: Path) -> None:
 
 
 def _purge_state_dir() -> None:
-    """Remove everything under ~/.ai_guard except the application log files.
+    """Remove our config dir and per-session history; preserve the app log.
 
-    The proxy's rotating application log (``ai_guard.log*``) is preserved so
-    the user keeps a forensic trail after uninstall.
+    The proxy's rotating application log (``ai-guard.log*``) is left in place
+    so the user keeps a forensic trail after uninstall.
     """
+    config = paths.config_dir()
+    if config.exists():
+        shutil.rmtree(config, ignore_errors=True)
+
     state = paths.state_dir()
     if not state.exists():
         return
-    keep_prefixes = ("ai_guard.log",)
+    keep_prefixes = ("ai-guard.log",)
     for entry in state.iterdir():
         if entry.is_file() and entry.name.startswith(keep_prefixes):
             continue

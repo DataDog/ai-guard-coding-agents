@@ -58,15 +58,19 @@ Every path the installer creates or modifies is listed below — nothing else on
 | `~/.local/share/ai-guard/`                            | PyInstaller onedir bundle (launcher + `_internal/`).          | `*`     | `*`           |
 | `~/.local/bin/ai-guard`                               | Symlink to the bundle launcher — your `PATH` entry.           | `*`     | `*`           |
 | `~/.local/bin/ai-guard-service`                       | Wrapper script invoked by launchd / systemd.                  | `*`     | `*`           |
-| `~/.ai_guard/config.env`                              | Persisted configuration values (mode `0600`).                 | `*`     | `*`           |
-| `~/.ai_guard/ai_guard.log`                            | Rotating application log.                                     | `*`     | `*`           |
+| `~/.local/state/ai-guard/ai-guard.log`                | Rotating application log.                                     | `*`     | `*`           |
+| `~/.local/state/ai-guard/<agent>/<session_id>.json`   | Per-session message history used to build AI Guard requests.  | `*`     | `*`           |
+| `~/.config/ai-guard/config.env`                       | Persisted configuration values (mode `0600`).                 | `*`     | `*`           |
 | `~/.config/systemd/user/ai-guard.socket`              | Listening socket, enabled with `systemctl --user`.            | `linux` | `*`           |
 | `~/.config/systemd/user/ai-guard.service`             | Service activated on demand by `ai-guard.socket`.             | `linux` | `*`           |
 | `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist` | LaunchAgent loaded via `launchctl bootstrap`.                 | `macOS` | `*`           |
 | `~/.claude/settings.json`                             | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`.     | `*`     | `Claude Code` |
 
-Service output is captured by the proxy's rotating logger at `~/.ai_guard/ai_guard.log`, including uncaught Python
-exceptions.
+Paths follow the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) and honour
+`$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set.
+
+Service output is captured by the proxy's rotating logger at `~/.local/state/ai-guard/ai-guard.log`, including uncaught
+Python exceptions.
 
 ### Uninstall
 
@@ -75,7 +79,7 @@ ai-guard uninstall
 ```
 
 Stops and unregisters the service, restores the original coding agent config, and removes all AI Guard artifacts.
-`~/.ai_guard/ai_guard.log*` is preserved as a forensic trail.
+`~/.local/state/ai-guard/ai-guard.log*` is preserved as a forensic trail.
 
 ## Contributing
 
