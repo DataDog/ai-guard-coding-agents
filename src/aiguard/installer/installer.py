@@ -183,7 +183,7 @@ def _ensure_binary_in_place(c: Console) -> None:
         ui.detail(
             c,
             Text(
-                "    sh scripts/build-bundle.sh && "
+                "    sh scripts/build.sh && "
                 "AI_GUARD_BUNDLE=$(pwd)/dist/ai-guard.tar.gz sh scripts/install.sh",
                 style="bold",
             ),

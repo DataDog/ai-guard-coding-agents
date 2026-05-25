@@ -4,7 +4,7 @@
 # bootstrap installer (``AI_GUARD_BUNDLE=...``) can consume it unchanged.
 #
 # Usage:
-#   sh scripts/build-bundle.sh
+#   sh scripts/build.sh
 #   AI_GUARD_BUNDLE=$(pwd)/dist/ai-guard.tar.gz sh scripts/install.sh
 #
 # Requires ``uv``; runs pyinstaller through ``uv run`` so the build env

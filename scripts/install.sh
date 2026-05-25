@@ -20,7 +20,7 @@
 #   AI_GUARD_BUNDLE        path to a built ai-guard tarball (same .tar.gz
 #                          format the release publishes); if set, skips the
 #                          GitHub download and installs from this archive
-#                          instead. Build one with ``scripts/build-bundle.sh``.
+#                          instead. Build one with ``scripts/build.sh``.
 
 set -eu
 
@@ -203,8 +203,7 @@ install_bundle() {
     chmod +x "${BUNDLE_DIR}/ai-guard"
 
     mkdir -p "$BIN_DIR"
-    rm -f "${BIN_DIR}/ai-guard"
-    ln -s "${BUNDLE_DIR}/ai-guard" "${BIN_DIR}/ai-guard"
+    ln -sfn "${BUNDLE_DIR}/ai-guard" "${BIN_DIR}/ai-guard"
 }
 
 # --- local bundle shortcut ---------------------------------------------------
