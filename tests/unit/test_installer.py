@@ -267,11 +267,12 @@ class TestClaudeInstaller:
         assert "env" not in data
         assert "hooks" not in data
 
-    def test_detect_finds_settings_dir(self, tmp_home: Path) -> None:
-        _make_claude_dir(tmp_home)
-        # settings.json doesn't exist yet but ~/.claude does — the executable
-        # check is what carries the truthy result here when one is on PATH.
-        # Either way, the agent is considered "installed".
+    def test_detect_finds_executable_on_path(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+        )
         assert ClaudeInstaller().detect() is True
 
     def test_detect_missing_dir_returns_false(

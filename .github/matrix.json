@@ -1,6 +1,5 @@
 [
   {"os": "ubuntu-latest",    "arch": "x86_64", "artifact": "ai-guard-linux-x86_64"},
   {"os": "ubuntu-24.04-arm", "arch": "arm64",  "artifact": "ai-guard-linux-arm64"},
-  {"os": "macos-latest",     "arch": "arm64",  "artifact": "ai-guard-macos-arm64"},
-  {"os": "windows-latest",   "arch": "x86_64", "artifact": "ai-guard-windows-x86_64"}
+  {"os": "macos-latest",     "arch": "arm64",  "artifact": "ai-guard-macos-arm64"}
 ]
