@@ -46,6 +46,7 @@ The bootstrap script checks for these upfront and exits with a clear error if an
 
 - **HTTP downloader** — `curl` or `wget`
 - **Checksum tool** — `sha256sum` or `shasum`
+- **Archive tools** — `tar` and `mktemp`
 - **Service manager** — `systemctl --user` on Linux, `launchctl` on macOS
 
 ### What gets installed
