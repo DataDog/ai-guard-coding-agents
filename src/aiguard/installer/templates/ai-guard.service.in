@@ -1,0 +1,10 @@
+[Unit]
+Description=Datadog AI Guard proxy for coding agents
+Requires=${SOCKET_NAME}
+After=network.target ${SOCKET_NAME}
+
+[Service]
+Type=simple
+ExecStart=${WRAPPER}
+Restart=on-failure
+RestartSec=2

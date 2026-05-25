@@ -1,0 +1,9 @@
+[Unit]
+Description=Datadog AI Guard proxy listening socket
+
+[Socket]
+ListenStream=${LISTEN_STREAM}
+Service=${SERVICE_NAME}
+
+[Install]
+WantedBy=sockets.target

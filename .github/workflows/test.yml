@@ -123,35 +123,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./dist/ai-guard --version
-          ./dist/ai-guard --help | grep -E "hook|proxy"
-          ./dist/ai-guard hook --help
-          ./dist/ai-guard proxy --help
+          ./dist/ai-guard/ai-guard --version
+          ./dist/ai-guard/ai-guard --help | grep -E "hook|proxy"
+          ./dist/ai-guard/ai-guard hook --help
+          ./dist/ai-guard/ai-guard proxy --help
 
       - name: CLI (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          .\dist\ai-guard.exe --version
+          .\dist\ai-guard\ai-guard.exe --version
           # Capture stdout as a single string — PowerShell's -match/-notmatch
           # operate per-element on arrays, which is not what we want.
-          $help = (.\dist\ai-guard.exe --help | Out-String)
+          $help = (.\dist\ai-guard\ai-guard.exe --help | Out-String)
           if ($help -notmatch "hook")  { throw "hook subcommand missing from --help" }
           if ($help -notmatch "proxy") { throw "proxy subcommand missing from --help" }
-          .\dist\ai-guard.exe hook --help
-          .\dist\ai-guard.exe proxy --help
+          .\dist\ai-guard\ai-guard.exe hook --help
+          .\dist\ai-guard\ai-guard.exe proxy --help
 
       - name: Proxy (Unix)
         if: runner.os != 'Windows'
         shell: bash
         env:
-          AI_GUARD_BINARY: ${{ github.workspace }}/dist/ai-guard
+          AI_GUARD_BINARY: ${{ github.workspace }}/dist/ai-guard/ai-guard
         run: uv run pytest tests/integration/test_binary_proxy.py -m binary -v
 
       - name: Proxy (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          AI_GUARD_BINARY: ${{ github.workspace }}\dist\ai-guard.exe
+          AI_GUARD_BINARY: ${{ github.workspace }}\dist\ai-guard\ai-guard.exe
         run: uv run pytest tests/integration/test_binary_proxy.py -m binary -v

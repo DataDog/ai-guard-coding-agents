@@ -17,6 +17,7 @@ import aiohttp
 import click
 
 from aiguard import __version__
+from aiguard.constants import AIGuardConstants
 
 logger = logging.getLogger("ai_guard")
 
@@ -45,7 +46,7 @@ async def _post(url: str, payload: bytes) -> tuple[int, bytes]:
     "--proxy-url",
     "proxy_url",
     envvar="DD_AI_GUARD_PROXY_URL",
-    default="http://127.0.0.1:29279",
+    default=AIGuardConstants.PROXY_URL_DEFAULT,
     show_default=True,
     help="Base URL of the running ai-guard proxy.",
 )

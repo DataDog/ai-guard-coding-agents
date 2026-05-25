@@ -27,3 +27,18 @@ class AIGuardConstants(object):
 
     # CODING AGENTS
     CLAUDE_CODE = "claude_code"
+
+    # Installer services
+    LAUNCHD_LABEL = "com.datadoghq.ai-guard"
+    SYSTEMD_UNIT_NAME = "ai-guard.service"
+    SYSTEMD_SOCKET_NAME = "ai-guard.socket"
+    LAUNCHD_SOCKET_NAME = "Listener"
+
+    # Proxy defaults (used by the proxy server, the hook client, and the installer)
+    PROXY_HOST_DEFAULT = "127.0.0.1"
+    PROXY_PORT_DEFAULT = 29279
+    PROXY_URL_DEFAULT = f"http://{PROXY_HOST_DEFAULT}:{PROXY_PORT_DEFAULT}"
+    PROXY_IDLE_TIMEOUT_DEFAULT = 0  # run forever
+
+    # Upstream defaults
+    ANTHROPIC_UPSTREAM_DEFAULT = "https://api.anthropic.com"

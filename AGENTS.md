@@ -14,11 +14,11 @@ Both flows ultimately land in a single `ProxyHandler` (`ClaudeProxy`) that does 
 ## Repository layout
 
 ```
-ai-guard-hooks/
+/
 ├── src/aiguard/
 │   ├── cli.py                      # Top-level Click CLI: `proxy`, `hook` commands
 │   ├── constants.py                # AIGuardConstants — span names + tag keys
-│   ├── storage.py                  # Per-session JSON persistence under ~/.ai_guard/<agent>/<sid>.json
+│   ├── storage.py                  # Per-session JSON persistence under $XDG_STATE_HOME/ai-guard/<agent>/<sid>.json
 │   ├── hooks/
 │   │   └── hooks.py                # `ai-guard hook` HTTP shim (aiohttp client → proxy)
 │   ├── proxy/
@@ -94,7 +94,7 @@ Dispatch is dynamic: `getattr(self, "_" + camel_to_snake(hook), None)`. To add a
 
 `matches()` is User-Agent-only by convention (`ClaudeProxy.matches` checks for `claude-cli`); method/path/content-type validation belongs in `parse_request`, which returns `("", [])` to skip persistence without rejecting the request.
 
-Storage layout is `~/.ai_guard/<agent>/<session_id>.json` (overridable with `DD_AI_GUARD_HOME`). `storage._session_file` resolves the candidate path and runs a `relative_to(root)` containment check, so a hostile `agent`/`session_id` that escapes the storage tree short-circuits to a no-op (load returns `[]`, save/delete log + bail).
+Storage layout is `$XDG_STATE_HOME/ai-guard/<agent>/<session_id>.json` (overridable with `DD_AI_GUARD_HOME`). `storage._session_file` resolves the candidate path and runs a `relative_to(root)` containment check, so a hostile `agent`/`session_id` that escapes the storage tree short-circuits to a no-op (load returns `[]`, save/delete log + bail).
 
 The proxy does **not** evaluate during proxying — it only persists. AI Guard evaluation happens inside the hook handlers (`_pre_tool_use` / `_post_tool_use` / `_post_tool_use_failure`), which load the persisted history, append the new tool exchange, and call `self._ai_guard.evaluate(...)`.
 
@@ -158,7 +158,7 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 - `Message` / `ContentPart` / `ToolCall` / `Function` come from `ddtrace.appsec.ai_guard`. They're `TypedDict`s — use the constructors for clarity but expect plain dicts after JSON round-trips.
 - All hook handler methods are `async`, return `dict | None`, and are decorated with `@tracer.wrap`. Inside, set tags via `tracer.current_span()`, not by manually opening a span.
 - Storage is the **source of truth** for conversation history during a session; the proxy persists, the hooks load. Don't keep parallel in-memory copies.
-- Logging goes to `~/.ai_guard/ai_guard.log` (rotating, 1 MB × 10 backups). Hook stdout must contain **only** the JSON decision the host agent expects — no extra prints.
+- Logging goes to `$XDG_STATE_HOME/ai-guard/ai-guard.log` (rotating, 1 MB × 10 backups). Hook stdout must contain **only** the JSON decision the host agent expects — no extra prints.
 - The `ddtrace` dependency is pinned to a custom branch via a direct reference in `project.dependencies` (`ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks`). `[tool.hatch.metadata] allow-direct-references = true` opts hatchling into that form. Both `pip install git+...` and `uv sync` resolve to the same branch. Don't replace with the upstream release until `ddtrace.appsec.ai_guard` lands in a published version.
 - Every source/config/script file carries the standard Datadog Apache-2.0 header (see [CONTRIBUTING.md](CONTRIBUTING.md#file-header) for the exact wording). Use the comment syntax for the file's language; skip docs, JSON, and test fixtures.
 
@@ -177,7 +177,7 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 cp .env.example .env       # set DD_API_KEY, DD_APP_KEY
 docker compose build
 docker compose up -d
-docker exec -ti ai-guard-hooks-claude-1 claude
+docker exec -ti ai-guard-coding-agents-claude-1 claude
 ```
 
 mitmproxy UI: `http://localhost:8081` (password: `ai_guard`). Claude's traffic and AI Guard `/api/v2/ai-guard/evaluate` calls are all visible there.

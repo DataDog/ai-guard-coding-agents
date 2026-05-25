@@ -6,9 +6,9 @@
 
 """Per-session conversation message storage.
 
-Layout: ``~/.ai_guard/<agent>/<session_id>.json`` — one JSON array of Message dicts
-per session, in observation order. The root can be overridden via
-``DD_AI_GUARD_HOME``.
+Layout: ``$XDG_STATE_HOME/ai-guard/<agent>/<session_id>.json`` — one JSON array
+of Message dicts per session, in observation order. The state root can be
+overridden via ``DD_AI_GUARD_HOME``.
 
 ``session_id`` and ``agent`` flow in from request metadata that the proxy does
 not control, so the resolved path is checked to stay within the storage root;
@@ -21,16 +21,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import shlex
 from pathlib import Path
 
 from ddtrace.appsec.ai_guard import Message
 
+from aiguard import paths
+from aiguard.paths import state_dir
+from aiguard.utils import atomic_write
+
 logger = logging.getLogger("ai_guard")
 
-
-def _storage_root() -> Path:
-    """Return the on-disk root for AI Guard state. Honors ``DD_AI_GUARD_HOME``."""
-    return Path(os.environ.get("DD_AI_GUARD_HOME") or (Path.home() / ".ai_guard"))
+_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _session_file(agent: str, session_id: str) -> Path | None:
@@ -40,7 +43,7 @@ def _session_file(agent: str, session_id: str) -> Path | None:
     path traversal via attacker-controlled ``agent``/``session_id``).
     """
     try:
-        root = _storage_root().resolve(strict=False)
+        root = state_dir().resolve(strict=False)
         candidate = (root / agent / f"{session_id}.json").resolve(strict=False)
         candidate.relative_to(root)
     except (OSError, ValueError):
@@ -52,6 +55,17 @@ def _session_file(agent: str, session_id: str) -> Path | None:
         )
         return None
     return candidate
+
+
+def _quote(value: str) -> str:
+    """Return the shell-safe representation of ``value`` for ``. config.env``.
+
+    The wrapper script sources this file with ``set -a; . config.env; set +a``,
+    so values have to survive POSIX shell parsing.
+    """
+    if value == "":
+        return '""'
+    return shlex.quote(value)
 
 
 def load_messages(agent: str, session_id: str) -> list[Message]:
@@ -99,3 +113,41 @@ def delete_messages(agent: str, session_id: str) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         logger.error("failed to delete %s", path, exc_info=True)
+
+
+def load_config(path: Path | None = None) -> dict[str, str]:
+    target = path or paths.config_env_path()
+    if not target.exists():
+        return {}
+
+    """Tolerant parser, sufficient for files we wrote with :func:`serialize`."""
+    out: dict[str, str] = {}
+    text = target.read_text(encoding="utf-8")
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not _KEY_RE.match(key):
+            continue
+        # Use shlex to undo the quoting applied by save_config().
+        parts = shlex.split(value, comments=False, posix=True)
+        out[key] = parts[0] if parts else ""
+    return out
+
+
+def save_config(values: dict[str, str], path: Path | None = None) -> None:
+    target = path or paths.config_env_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = []
+    for key, value in values.items():
+        if not _KEY_RE.match(key):
+            raise ValueError(f"refusing to write malformed env var name: {key!r}")
+        lines.append(f"{key}={_quote(value)}")
+    payload = "\n".join(lines) + "\n"
+    # config.env carries DD_API_KEY / DD_APP_KEY — lock it to user-only.
+    atomic_write(target, lambda fh: fh.write(payload), mode=0o600)

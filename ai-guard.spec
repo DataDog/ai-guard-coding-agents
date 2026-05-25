@@ -10,15 +10,40 @@ a = Analysis(
     ["src/aiguard/__main__.py"],
     pathex=["src"],
     binaries=[],
-    datas=[],
+    datas=[
+        # Service-registration templates loaded via importlib.resources.
+        ("src/aiguard/installer/templates/*.in", "aiguard/installer/templates"),
+    ],
     hiddenimports=[
         "aiguard",
         "aiguard.claude",
+        "aiguard.claude.installer",
+        "aiguard.claude.proxy",
         "aiguard.hooks",
         "aiguard.hooks.hooks",
         "aiguard.proxy",
         "aiguard.proxy.server",
-        "aiguard.claude.proxy",
+        "aiguard.installer",
+        "aiguard.installer.agent",
+        "aiguard.installer.installer",
+        "aiguard.installer.ui",
+        # service.manager picks one of these at runtime via platform check, so
+        # PyInstaller's static analyser can't see the conditional import.
+        "aiguard.installer.service",
+        "aiguard.installer.service.manager",
+        "aiguard.installer.service.launchd",
+        "aiguard.installer.service.systemd_user",
+        "aiguard.installer.service.wrapper",
+        # Templates are accessed via importlib.resources.files(__package__);
+        # the package itself must be importable for the lookup to find the
+        # bundled .in files declared in `datas`.
+        "aiguard.installer.templates",
+        "rich",
+        "rich.console",
+        "rich.panel",
+        "rich.table",
+        # Lazily imported from aiguard.installer.ui only on a real TTY.
+        "pwinput",
         # aiohttp core + C extensions
         "aiohttp",
         "aiohttp.web",
@@ -39,7 +64,6 @@ a = Analysis(
         "aiohttp.payload",
         "aiohttp.helpers",
         "aiohttp.tcp_helpers",
-        "aiohttp._helpers",
         "aiohttp._http_parser",
         "aiohttp._http_writer",
         "aiohttp._websocket",
@@ -93,14 +117,22 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="ai-guard",
     debug=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     console=True,
-    onefile=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="ai-guard",
 )

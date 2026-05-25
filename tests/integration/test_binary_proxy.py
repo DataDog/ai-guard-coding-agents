@@ -6,9 +6,9 @@
 
 """Binary integration: drive real HTTP requests through the built ai-guard proxy.
 
-Skipped unless the PyInstaller binary is present at ``dist/ai-guard[.exe]``
-(or at the path in ``AI_GUARD_BINARY``). CI runs these from the smoke job on
-every OS/arch after building the binary.
+Skipped unless the PyInstaller onedir bundle is present at
+``dist/ai-guard/ai-guard[.exe]`` (or at the path in ``AI_GUARD_BINARY``). CI
+runs these from the smoke job on every OS/arch after building the bundle.
 """
 
 from __future__ import annotations
@@ -31,10 +31,11 @@ import pytest
 from aiguard import storage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_LAUNCHER_NAME = "ai-guard.exe" if sys.platform == "win32" else "ai-guard"
 BINARY = (
     Path(os.environ["AI_GUARD_BINARY"])
     if os.environ.get("AI_GUARD_BINARY")
-    else REPO_ROOT / "dist" / ("ai-guard.exe" if sys.platform == "win32" else "ai-guard")
+    else REPO_ROOT / "dist" / "ai-guard" / _LAUNCHER_NAME
 )
 
 pytestmark = pytest.mark.binary
@@ -140,7 +141,7 @@ def proxy_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[dict[str, Any]]:
     port = _free_port()
-    log_file = tmp_path / "ai_guard.log"
+    log_file = tmp_path / "ai-guard.log"
     home = tmp_path / "home"
     home.mkdir()
 
@@ -246,7 +247,8 @@ def test_binary_passthrough_persists_messages(
     # Upstream Anthropic was called once on the right path.
     assert [c["path"] for c in anthropic_mock["calls"]] == ["/v1/messages"]
 
-    # The binary persisted the conversation under ~/.ai_guard/claude/<session>.json.
+    # The binary persisted the conversation under
+    # $DD_AI_GUARD_HOME/claude/<session>.json.
     path = _wait_for_storage(proxy_process["home"], "claude", session_id)
     assert path.exists(), f"expected session file at {path}"
 

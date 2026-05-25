@@ -16,6 +16,7 @@ from pathlib import Path
 
 import click
 
+from aiguard import paths
 from aiguard.hooks.hooks import hook
 
 for _key in [k for k in os.environ if k.startswith("OTEL_")]:
@@ -30,12 +31,16 @@ if not __package__:
 from ddtrace import tracer  # noqa: E402
 
 from aiguard import __version__  # noqa: E402
+from aiguard.installer.installer import install, uninstall  # noqa: E402
 from aiguard.proxy.server import proxy  # noqa: E402
 
 logger = logging.getLogger("ai_guard")
 
 
-def _setup_logging(log_file: str | None) -> None:
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def _setup_logging(log_file: str | None, log_level: str) -> None:
     if not log_file:
         logger.addHandler(logging.NullHandler())
         return
@@ -48,7 +53,7 @@ def _setup_logging(log_file: str | None) -> None:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(getattr(logging, log_level.upper()))
 
     def _excepthook(exc_type, exc_value, exc_tb):
         if not issubclass(exc_type, KeyboardInterrupt):
@@ -74,11 +79,19 @@ class _Group(click.Group):
 @click.option(
     "--log-file",
     envvar="DD_AI_GUARD_LOG_FILE",
-    default=lambda: str(Path.home() / ".ai_guard" / "ai_guard.log"),
+    default=lambda: str(paths.log_file_path()),
     show_default=True,
     help="Path to log file.",
 )
-def main(log_file: str | None) -> None:
+@click.option(
+    "--log-level",
+    envvar="DD_AI_GUARD_LOG_LEVEL",
+    type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    default="ERROR",
+    show_default=True,
+    help="Minimum severity written to the log file.",
+)
+def main(log_file: str | None, log_level: str) -> None:
     """Datadog AI Guard — real-time security for coding agents.
 
     Intercepts and evaluates every agent action (prompts, tool calls,
@@ -87,19 +100,25 @@ def main(log_file: str | None) -> None:
 
     \b
     Commands:
-      hook    Dispatch a hook event for an agent
-      proxy   Transparent HTTP proxy for inspecting LLM traffic
+      hook       Dispatch a hook event for an agent
+      proxy      Transparent HTTP proxy for inspecting LLM traffic
+      install    Set up ai-guard for detected coding agents
+      uninstall  Remove ai-guard and restore agent configs
 
     \b
     Examples:
       ai-guard hook claude SessionStart < event.json
       ai-guard proxy --port 29279 --anthropic-upstream https://api.anthropic.com
+      ai-guard install
+      ai-guard uninstall --yes
     """
-    _setup_logging(log_file)
+    _setup_logging(log_file, log_level)
 
 
 main.add_command(hook)
 main.add_command(proxy)
+main.add_command(install)
+main.add_command(uninstall)
 
 if __name__ == "__main__":
     main()
