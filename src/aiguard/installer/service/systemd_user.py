@@ -18,7 +18,7 @@ def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     )
 
 
-def install() -> None:
+def install(host: str, port: int) -> None:
     unit_path = paths.systemd_unit_path()
     socket_path = paths.systemd_socket_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,8 +33,8 @@ def install() -> None:
     socket_path.write_text(
         render(
             "ai-guard.socket.in",
-            HOST=AIGuardConstants.PROXY_HOST_DEFAULT,
-            PORT=str(AIGuardConstants.PROXY_PORT_DEFAULT),
+            HOST=host,
+            PORT=str(port),
             SERVICE_NAME=AIGuardConstants.SYSTEMD_UNIT_NAME,
         ),
         encoding="utf-8",

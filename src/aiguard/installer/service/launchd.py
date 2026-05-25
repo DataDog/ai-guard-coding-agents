@@ -23,7 +23,7 @@ def _launchctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     )
 
 
-def install() -> None:
+def install(host: str, port: int) -> None:
     plist_path = paths.launchd_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(
@@ -33,8 +33,8 @@ def install() -> None:
             WRAPPER=str(paths.wrapper_path()),
             HOME=str(paths.home()),
             SOCKET_NAME=AIGuardConstants.LAUNCHD_SOCKET_NAME,
-            HOST=AIGuardConstants.PROXY_HOST_DEFAULT,
-            PORT=str(AIGuardConstants.PROXY_PORT_DEFAULT),
+            HOST=host,
+            PORT=str(port),
         ),
         encoding="utf-8",
     )

@@ -442,6 +442,31 @@ class TestCollectFields:
         assert values["DD_APP_KEY"] == "enva"
         assert values["DD_SERVICE"] == "ai-guard"
 
+    def test_env_value_wins_over_field_default_on_reinstall(self) -> None:
+        """A previously stored / exported value must take precedence over a
+        field's hardcoded default when the user just hits Enter at the prompt.
+
+        Tier-1 fields like DD_SITE and DD_ENV ship with defaults; reinstalling
+        with the env populated from config.env should reuse those, not silently
+        revert to the hardcoded ones."""
+        values = _run_prompt(
+            {
+                "advanced": False,
+                "non_interactive": False,
+                "env": {
+                    "DD_SITE": "datadoghq.eu",
+                    "DD_API_KEY": "k",
+                    "DD_APP_KEY": "a",
+                    "DD_SERVICE": "svc",
+                    "DD_ENV": "staging",
+                },
+            },
+            # site, api, app, env, service, version — empty lines accept defaults
+            env_inputs="\n\n\n\n\n\n",
+        )
+        assert values["DD_SITE"] == "datadoghq.eu"
+        assert values["DD_ENV"] == "staging"
+
 
 class TestUiSecretEntry:
     """``aiguard.installer.ui.prompt`` (password=True) — TTY-vs-pipe routing."""
@@ -586,7 +611,7 @@ class TestService:
 
         monkeypatch.setattr(launchd.subprocess, "run", fake_run)
         monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
-        launchd.install()
+        launchd.install("127.0.0.1", 29279)
 
         plist = paths.launchd_plist_path().read_text()
         # The proxy's own app-log path must NOT appear in the plist — that file
@@ -604,7 +629,7 @@ class TestService:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install()
+        systemd_user.install("127.0.0.1", 29279)
 
         unit = paths.systemd_unit_path().read_text()
         # No log routing in the unit — output is captured by the proxy's own
@@ -626,7 +651,7 @@ class TestService:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install()
+        systemd_user.install("127.0.0.1", 29279)
 
         # Both units land on disk, and systemd enables the SOCKET (not the
         # service) so requests trigger socket activation.
@@ -648,12 +673,45 @@ class TestService:
 
         monkeypatch.setattr(launchd.subprocess, "run", fake_run)
         monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
-        launchd.install()
+        launchd.install("127.0.0.1", 29279)
 
         assert paths.launchd_plist_path().exists()
         # Bootout-then-bootstrap pattern.
         assert any(c[:2] == ["launchctl", "bootout"] for c in calls)
         assert any(c[:2] == ["launchctl", "bootstrap"] for c in calls)
+
+    def test_systemd_socket_uses_custom_host_port(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-default proxy host/port must reach the rendered socket file —
+        otherwise the agent talks to the new URL but the listener stays on
+        the default and connections fail."""
+        from aiguard.installer.service import systemd_user
+
+        def fake_run(*args, **kwargs):
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
+        systemd_user.install("0.0.0.0", 41234)
+
+        socket_unit = paths.systemd_socket_path().read_text()
+        assert "0.0.0.0:41234" in socket_unit
+
+    def test_launchd_plist_uses_custom_host_port(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aiguard.installer.service import launchd
+
+        def fake_run(*args, **kwargs):
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(launchd.subprocess, "run", fake_run)
+        monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
+        launchd.install("0.0.0.0", 41234)
+
+        plist = paths.launchd_plist_path().read_text()
+        assert "0.0.0.0" in plist
+        assert "41234" in plist
 
 
 # =============================================================================

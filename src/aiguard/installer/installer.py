@@ -127,7 +127,9 @@ def _prompt(field: Field, env: dict[str, str]) -> str:
     label = f"{field.label} ({field.key})"
     env_value = env.get(field.key)
 
-    default = field.default or env_value
+    # Stored/exported values must win over the field's hardcoded default, otherwise
+    # reinstall silently resets customised entries when the user hits Enter.
+    default = env_value or field.default
     return ui.prompt(label, default, field.secret)
 
 
@@ -357,10 +359,9 @@ def install(
     body.append("(mode 0600)", style="dim")
     ui.ok(c, body)
 
-    proxy_url = _proxy_url(
-        values.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT),
-        int(values.get("DD_AI_GUARD_PROXY_PORT", AIGuardConstants.PROXY_PORT_DEFAULT)),
-    )
+    host = values.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = int(values.get("DD_AI_GUARD_PROXY_PORT", AIGuardConstants.PROXY_PORT_DEFAULT))
+    proxy_url = _proxy_url(host, port)
 
     # ── Install ─────────────────────────────────────────────────────────
     ui.section(c, "Install")
@@ -380,7 +381,7 @@ def install(
     ui.section(c, "Register service")
     _ensure_binary_in_place(c)
     try:
-        service_manager.install()
+        service_manager.install(host, port)
     except Exception as exc:
         ui.err(c, f"failed to register service: {exc}")
         sys.exit(1)
@@ -389,8 +390,6 @@ def install(
     ui.ok(c, f"{backend} registered")
     ui.detail(c, _service_path())
 
-    port = int(values.get("DD_AI_GUARD_PROXY_PORT", AIGuardConstants.PROXY_PORT_DEFAULT))
-    host = values.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
     ready_host = AIGuardConstants.PROXY_HOST_DEFAULT if host in ("0.0.0.0", "::") else host
 
     if not wait_ready(ready_host, port, timeout=10.0):
