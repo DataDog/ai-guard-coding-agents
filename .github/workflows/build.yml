@@ -10,14 +10,23 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "When set, attach built artifacts to this GitHub Release tag."
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Key on the release tag (when invoked by release.yml) so a long-running
+  # main-branch build doesn't cancel the release-time build of the same code.
+  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -28,7 +37,9 @@ jobs:
     name: Build (${{ matrix.os }} / ${{ matrix.arch }})
     needs: test
     permissions:
-      contents: read
+      # `write` is required only for the final `gh release upload` step;
+      # all earlier steps in this job operate read-only on the repo.
+      contents: write
 
     strategy:
       fail-fast: false
@@ -105,3 +116,41 @@ jobs:
           path: |
             dist/${{ matrix.artifact }}.zip
             dist/${{ matrix.artifact }}.zip.sha256
+
+      # Attach assets to the GitHub Release when the workflow is invoked for
+      # a release — either by release.yml (reusable-workflow call with
+      # `release_tag`) or by a manual `v*` tag push (recovery path).
+      - name: Resolve release tag
+        id: release_tag
+        if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Attach assets to GitHub Release (Unix)
+        if: steps.release_tag.outputs.tag != '' && runner.os != 'Windows'
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.release_tag.outputs.tag }}" \
+            "${{ matrix.artifact }}.tar.gz" \
+            "${{ matrix.artifact }}.tar.gz.sha256" \
+            --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Attach assets to GitHub Release (Windows)
+        if: steps.release_tag.outputs.tag != '' && runner.os == 'Windows'
+        working-directory: dist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.release_tag.outputs.tag }}" `
+            "${{ matrix.artifact }}.zip" `
+            "${{ matrix.artifact }}.zip.sha256" `
+            --clobber --repo "$env:GITHUB_REPOSITORY"

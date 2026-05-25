@@ -49,7 +49,12 @@ the conventions we follow.
    `ruff check`, `ruff format --check`, and the full pytest suite on Linux,
    macOS, and Windows; see [`.github/workflows/test.yml`](.github/workflows/test.yml).
 4. Open the PR against `main` and fill in the pull request template.
-5. By submitting a PR you agree to license your contribution under the
+5. **Use a Conventional Commits PR title** (e.g. `feat: add proxy retry`,
+   `fix: handle ECONNRESET`, `chore: bump linter`). PRs are squash-merged
+   and the PR title becomes the commit subject; release automation parses
+   those subjects to compute version bumps and the CHANGELOG. See
+   [Release process](#release-process) below for the bump table.
+6. By submitting a PR you agree to license your contribution under the
    [Apache 2.0 License](LICENSE) that covers this repository.
 
 ## Adding third-party dependencies
@@ -72,3 +77,41 @@ Copyright 2026-Present Datadog, Inc.
 ```
 
 Use the comment syntax for the file's language.
+
+## Release process
+
+Releases are automated via
+[release-please](https://github.com/googleapis/release-please-action),
+configured in [`release-please-config.json`](release-please-config.json) and
+driven by [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+How it works:
+
+1. Every push to `main` triggers `release.yml`, which runs `release-please`.
+2. `release-please` inspects conventional-commit messages since the last
+   release tag and maintains a long-lived release PR titled
+   `ci: release X.Y.Z` that bumps `pyproject.toml`, `src/aiguard/__init__.py`,
+   and `.release-please-manifest.json`, and updates `CHANGELOG.md`.
+3. **Merging that PR** cuts a `vX.Y.Z` git tag, creates a GitHub Release
+   with the generated notes, and invokes the build job — which builds the
+   three platform tarballs and attaches them (plus `.sha256` sidecars) to
+   the Release. [`scripts/install.sh`](scripts/install.sh) downloads from
+   the Release assets.
+
+Version bump table (pre-1.0):
+
+| Commit prefix                       | Bump  | Example         |
+| ----------------------------------- | ----- | --------------- |
+| `fix:` / `perf:`                    | patch | `0.1.0 → 0.1.1` |
+| `feat:`                             | minor | `0.1.0 → 0.2.0` |
+| `feat!:` / `BREAKING CHANGE:` body  | minor | `0.1.0 → 0.2.0` |
+| `chore:` / `docs:` / `ci:` / `test:`/ `refactor:` / `style:` | none  | no release      |
+
+Pre-1.0 behaviour comes from `bump-minor-pre-major: true`. Once the project
+is ready for `1.0.0`, cut it explicitly with a `Release-As: 1.0.0` trailer
+in any commit body and merge to `main`.
+
+Manual recovery: if `release-please` is broken, you can still cut a release
+by hand — push a `v*` tag (`git tag v0.2.0 && git push origin v0.2.0`),
+create the GitHub Release manually, and `build.yml`'s tag-push trigger
+will build and attach the assets.
