@@ -18,6 +18,14 @@ def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     )
 
 
+def _listen_stream(host: str, port: int) -> str:
+    # systemd's ListenStream needs IPv6 hosts in bracketed form ([addr]:port);
+    # IPv4 stays as addr:port. ":" in the host is a sufficient discriminator.
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
 def install(host: str, port: int) -> None:
     unit_path = paths.systemd_unit_path()
     socket_path = paths.systemd_socket_path()
@@ -33,8 +41,7 @@ def install(host: str, port: int) -> None:
     socket_path.write_text(
         render(
             "ai-guard.socket.in",
-            HOST=host,
-            PORT=str(port),
+            LISTEN_STREAM=_listen_stream(host, port),
             SERVICE_NAME=AIGuardConstants.SYSTEMD_UNIT_NAME,
         ),
         encoding="utf-8",

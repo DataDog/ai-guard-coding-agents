@@ -2,7 +2,7 @@
 Description=Datadog AI Guard proxy listening socket
 
 [Socket]
-ListenStream=${HOST}:${PORT}
+ListenStream=${LISTEN_STREAM}
 Service=${SERVICE_NAME}
 
 [Install]

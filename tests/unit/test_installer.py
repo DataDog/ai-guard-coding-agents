@@ -586,8 +586,7 @@ class TestService:
     def test_systemd_socket_template_renders(self) -> None:
         out = render(
             "ai-guard.socket.in",
-            HOST="127.0.0.1",
-            PORT="29279",
+            LISTEN_STREAM="127.0.0.1:29279",
             SERVICE_NAME="ai-guard.service",
         )
         assert "[Socket]" in out
@@ -695,7 +694,23 @@ class TestService:
         systemd_user.install("0.0.0.0", 41234)
 
         socket_unit = paths.systemd_socket_path().read_text()
-        assert "0.0.0.0:41234" in socket_unit
+        assert "ListenStream=0.0.0.0:41234" in socket_unit
+
+    def test_systemd_socket_brackets_ipv6_host(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """systemd requires [addr]:port for IPv6; a bare ``::`` would render
+        ``ListenStream=:::29279`` and fail to parse."""
+        from aiguard.installer.service import systemd_user
+
+        def fake_run(*args, **kwargs):
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
+        systemd_user.install("::", 29279)
+
+        socket_unit = paths.systemd_socket_path().read_text()
+        assert "ListenStream=[::]:29279" in socket_unit
 
     def test_launchd_plist_uses_custom_host_port(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
