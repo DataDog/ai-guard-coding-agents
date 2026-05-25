@@ -443,7 +443,7 @@ class TestCollectFields:
 
 
 class TestUiSecretEntry:
-    """``aiguard.installer.ui.read_secret`` — TTY-vs-pipe routing."""
+    """``aiguard.installer.ui.prompt`` (password=True) — TTY-vs-pipe routing."""
 
     def test_uses_pwinput_on_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """On a real TTY the secret prompt should route through pwinput (which
@@ -459,8 +459,23 @@ class TestUiSecretEntry:
 
         monkeypatch.setattr("pwinput.pwinput", fake_pwinput)
 
-        assert ui.read_secret("DD_API_KEY") == "from-pwinput"
+        assert ui.prompt("DD_API_KEY", None, password=True) == "from-pwinput"
         assert calls == [{"prompt": "DD_API_KEY: ", "mask": "*"}]
+
+    def test_pwinput_shows_masked_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A stored value is shown as a masked ``[****wxyz]`` hint, and an
+        empty pwinput response keeps the original (unmasked) value."""
+        monkeypatch.setattr(ui.sys.stdin, "isatty", lambda: True)
+        calls: list[dict] = []
+
+        def fake_pwinput(prompt: str, mask: str = "*") -> str:
+            calls.append({"prompt": prompt, "mask": mask})
+            return ""  # user pressed Enter
+
+        monkeypatch.setattr("pwinput.pwinput", fake_pwinput)
+
+        assert ui.prompt("DD_API_KEY", "abcdefghwxyz", password=True) == "abcdefghwxyz"
+        assert calls == [{"prompt": "DD_API_KEY [********wxyz]: ", "mask": "*"}]
 
     def test_falls_back_to_click_off_tty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Off-TTY (tests, CI piped stdin) must not call pwinput, which would
@@ -473,7 +488,7 @@ class TestUiSecretEntry:
         monkeypatch.setattr("pwinput.pwinput", explode)
         monkeypatch.setattr(ui.click, "prompt", lambda *a, **kw: "from-click")
 
-        assert ui.read_secret("DD_API_KEY") == "from-click"
+        assert ui.prompt("DD_API_KEY", None, password=True) == "from-click"
 
 
 # =============================================================================

@@ -127,7 +127,7 @@ exe = EXE(
     name="ai-guard",
     debug=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     console=True,
 )
@@ -137,7 +137,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="ai-guard",
 )

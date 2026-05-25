@@ -127,21 +127,8 @@ def _prompt(field: Field, env: dict[str, str]) -> str:
     label = f"{field.label} ({field.key})"
     env_value = env.get(field.key)
 
-    if env_value:
-        # Render the env value (masked for secrets) right after the colon, with
-        # the cursor positioned at its end — press Enter to accept, or edit to
-        # override. On non-TTY (piped tests), readline pre-fill is a no-op:
-        # input() then reads the piped line (empty → accept, otherwise override).
-        prefill = ui.mask_secret(env_value) if field.secret else env_value
-        typed = ui.prompt_with_value(f"{label}: ", prefill)
-        if not typed or typed == prefill:
-            return env_value
-        return typed
-
-    if field.secret:
-        return ui.read_secret(label)
-
-    return ui.prompt_with_default(label, field.default)
+    default = field.default or env_value
+    return ui.prompt(label, default, field.secret)
 
 
 def _proxy_url(host: str, port: int) -> str:
