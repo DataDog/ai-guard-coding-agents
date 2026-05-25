@@ -32,7 +32,22 @@ def local_bin_dir() -> Path:
     return home() / ".local" / "bin"
 
 
+def bundle_dir() -> Path:
+    """Root of the PyInstaller onedir bundle.
+
+    The launcher executable plus its ``_internal/`` siblings live here; the
+    user-facing ``binary_path()`` is a symlink into this directory.
+    """
+    return home() / ".local" / "share" / "ai-guard"
+
+
+def bundle_executable() -> Path:
+    """The PyInstaller launcher inside the bundle (the real exec target)."""
+    return bundle_dir() / "ai-guard"
+
+
 def binary_path() -> Path:
+    """User-facing entry on ``PATH``; symlink to :func:`bundle_executable`."""
     return local_bin_dir() / "ai-guard"
 
 

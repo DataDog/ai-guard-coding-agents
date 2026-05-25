@@ -149,31 +149,37 @@ def _proxy_url(host: str, port: int) -> str:
 
 
 def _ensure_binary_in_place(c: Console) -> None:
-    """Guarantee ``~/.local/bin/ai-guard`` exists before we wire the service.
+    """Guarantee the onedir bundle is in place before we wire the service.
 
-    Two install paths reach this code:
+    The PyInstaller bundle is laid out as a directory (``onedir`` mode), so we
+    don't have a single self-contained binary to move around — the launcher
+    needs its ``_internal/`` siblings next to it. Two install paths reach
+    this code:
 
-    1. Bootstrap shell script — downloads the binary, drops it at
-       ``~/.local/bin/ai-guard``, then execs it. Binary already in place;
-       nothing to do.
+    1. Bootstrap shell script — downloads the release tarball, extracts the
+       bundle into ``~/.local/share/ai-guard``, symlinks the launcher at
+       ``~/.local/bin/ai-guard``, then execs the symlink. Bundle already in
+       place; nothing to do.
     2. User runs a frozen binary from somewhere else (e.g. ``./ai-guard
-       install`` from a download directory). We copy ourselves to the
-       expected location so the wrapper the service backend writes can find
-       us.
+       install`` from a freshly built ``dist/ai-guard``). We copy the whole
+       bundle into ``bundle_dir()`` and symlink the launcher at
+       ``binary_path()`` so the service wrapper can find a stable path.
 
     Running from source (``uv run ai-guard install``) is rejected with a
     clear error — the wrapper script needs a real binary on disk, not the
     current Python interpreter.
     """
+    bundle = paths.bundle_dir()
     target = paths.binary_path()
-    if target.exists():
+    bundle_exec = paths.bundle_executable()
+    if bundle_exec.exists() and target.exists():
         return
 
     if not getattr(sys, "frozen", False):
-        ui.err(c, f"no AI Guard binary at {target}")
+        ui.err(c, f"no AI Guard bundle at {bundle}")
         ui.detail(
             c,
-            "The installer needs a built AI Guard binary on disk so the "
+            "The installer needs a built AI Guard bundle on disk so the "
             "background service can launch it.",
         )
         ui.detail(c, "")
@@ -182,28 +188,35 @@ def _ensure_binary_in_place(c: Console) -> None:
             c,
             Text(
                 "    curl -fsSL https://raw.githubusercontent.com/"
-                "DataDog/ai-guard-coding-agents/main/installer/install.sh | sh",
+                "DataDog/ai-guard-coding-agents/main/scripts/install.sh | sh",
                 style="bold",
             ),
         )
-        ui.detail(c, "Or build locally and copy the binary into place:")
+        ui.detail(c, "Or build locally with uv + pyinstaller and install from the tarball:")
         ui.detail(
             c,
             Text(
-                f"    uv run pyinstaller ai-guard.spec && cp dist/ai-guard {target}",
+                "    sh scripts/build-bundle.sh && "
+                "AI_GUARD_BUNDLE=$(pwd)/dist/ai-guard.tar.gz sh scripts/install.sh",
                 style="bold",
             ),
         )
         sys.exit(1)
 
-    source = Path(sys.executable).resolve()
-    if source == target.resolve():
-        return
+    source_bundle = Path(sys.executable).resolve().parent
+    if source_bundle != bundle.resolve():
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        if bundle.exists():
+            shutil.rmtree(bundle)
+        shutil.copytree(source_bundle, bundle, symlinks=True)
+        os.chmod(bundle_exec, 0o755)
+        ui.detail(c, f"copied bundle into place at {bundle}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    os.chmod(target, 0o755)
-    ui.detail(c, f"copied running binary into place at {target}")
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    target.symlink_to(bundle_exec)
+    ui.detail(c, f"symlinked launcher at {target}")
 
 
 def _detect_agents(selected: tuple[str, ...]) -> list[AgentInstaller]:
@@ -411,7 +424,7 @@ def install(
 def uninstall(yes: bool, no_color: bool) -> None:
     """Uninstall ai-guard: remove hooks, service, and state. Logs remain."""
     c = ui.console(no_color)
-
+    ui.section(c, "Uninstall")
     if not yes:
         bullets = [
             "Stop and remove the AI Guard service",
@@ -459,9 +472,18 @@ def uninstall(yes: bool, no_color: bool) -> None:
         pass
 
     binary = paths.binary_path()
-    if binary.exists():
-        _remove_binary(binary)
+    bundle = paths.bundle_dir()
+    if binary.is_symlink() or binary.exists():
+        # The PATH-visible launcher is just a symlink; removing it is safe
+        # while we're still running (it's only metadata).
+        try:
+            binary.unlink()
+        except FileNotFoundError:
+            pass
         ui.ok(c, f"removed {binary}")
+    if bundle.exists():
+        _remove_bundle(bundle)
+        ui.ok(c, f"removed {bundle}")
 
     rows: list[tuple[str, str]] = [
         ("App log", f"{paths.log_file_path()}*"),
@@ -470,23 +492,21 @@ def uninstall(yes: bool, no_color: bool) -> None:
     c.print()
 
 
-def _remove_binary(binary: Path) -> None:
-    # When running as a PyInstaller onefile bundle, the bootloader lazily
-    # re-opens the executable to read modules from the embedded archive (see
-    # PyInstaller/loader/pyimod01_archive.py). Unlinking it mid-run then raises
-    # "appears to have been moved or deleted since this application was
-    # launched" on the next import. Defer the unlink to a detached helper so
-    # we can exit cleanly first.
+def _remove_bundle(bundle: Path) -> None:
+    # When running as a frozen PyInstaller bundle, the launcher and ``_internal/``
+    # files are still mapped by this process; unlinking them mid-run can break
+    # lazy imports. Defer the ``rm -rf`` to a detached helper so we can exit
+    # cleanly first.
     if getattr(sys, "frozen", False):
         subprocess.Popen(
-            ["sh", "-c", f'sleep 1; rm -f -- "{binary}"'],
+            ["sh", "-c", f'sleep 1; rm -rf -- "{bundle}"'],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         return
-    binary.unlink()
+    shutil.rmtree(bundle, ignore_errors=True)
 
 
 def _purge_state_dir() -> None:

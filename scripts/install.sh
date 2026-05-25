@@ -1,28 +1,34 @@
 #!/bin/sh
 # AI Guard bootstrap installer.
 #
-# Detects the current OS/arch, downloads the matching ai-guard binary from
-# the GitHub release, verifies its SHA-256 checksum, drops it in
-# ~/.local/bin, and hands off to `ai-guard install` (or `ai-guard uninstall`
-# if --uninstall is passed) for the actual install logic.
+# Detects the current OS/arch, downloads the matching ai-guard release
+# tarball from GitHub, verifies its SHA-256 checksum, extracts the
+# PyInstaller onedir bundle into ~/.local/share/ai-guard, symlinks the
+# launcher at ~/.local/bin/ai-guard, and hands off to `ai-guard install`
+# (or `ai-guard uninstall` if --uninstall is passed) for the actual install
+# logic.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/installer/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --advanced
 #   curl -fsSL .../install.sh | sh -s -- --uninstall --yes
 #
 # Environment overrides:
-#   AI_GUARD_VERSION    pin a specific release tag (default: latest)
-#   AI_GUARD_BIN_DIR    install location          (default: ~/.local/bin)
-#   AI_GUARD_BINARY     path to an existing ai-guard binary; if set, skips
-#                       the GitHub download and uses this file instead
+#   AI_GUARD_VERSION       pin a specific release tag (default: latest)
+#   AI_GUARD_BIN_DIR       symlink location          (default: ~/.local/bin)
+#   AI_GUARD_BUNDLE_DIR    bundle extract root       (default: ~/.local/share/ai-guard)
+#   AI_GUARD_BUNDLE        path to a built ai-guard tarball (same .tar.gz
+#                          format the release publishes); if set, skips the
+#                          GitHub download and installs from this archive
+#                          instead. Build one with ``scripts/build-bundle.sh``.
 
 set -eu
 
 REPO="DataDog/ai-guard-coding-agents"
 BIN_DIR="${AI_GUARD_BIN_DIR:-$HOME/.local/bin}"
+BUNDLE_DIR="${AI_GUARD_BUNDLE_DIR:-$HOME/.local/share/ai-guard}"
 VERSION="${AI_GUARD_VERSION:-latest}"
-LOCAL_BINARY="${AI_GUARD_BINARY:-}"
+LOCAL_BUNDLE="${AI_GUARD_BUNDLE:-}"
 
 # --- ui primitives -----------------------------------------------------------
 # Mirror src/aiguard/installer/ui.py so the bootstrap → ai-guard handoff feels
@@ -118,6 +124,7 @@ case "${os}-${arch}" in
 esac
 
 ARTIFACT="ai-guard-${os}-${arch}"
+TARBALL="${ARTIFACT}.tar.gz"
 ok "$os $arch"
 
 # --- preflight ---------------------------------------------------------------
@@ -160,12 +167,14 @@ require_any() {
 }
 
 # Downloader and checksum tools are only used when fetching the released
-# binary; the LOCAL_BINARY shortcut skips both code paths.
-if [ -z "$LOCAL_BINARY" ]; then
+# bundle; the LOCAL_BUNDLE shortcut skips both code paths. ``tar`` is needed
+# either way to know we can lay the bundle out.
+if [ -z "$LOCAL_BUNDLE" ]; then
     require_any HTTP_TOOL "HTTP downloader" curl wget
     require_any SHA_TOOL  "SHA-256 verifier" sha256sum shasum
     require mktemp
 fi
+require tar
 
 # The handoff to `ai-guard ${MODE}` manages a per-user service, so the
 # platform's service tool must be present.
@@ -178,15 +187,46 @@ if [ "$missing" -gt 0 ]; then
     die "$missing required tool(s) missing — install them and re-run"
 fi
 
-# --- local binary shortcut ---------------------------------------------------
-if [ -n "$LOCAL_BINARY" ]; then
-    section "Local binary"
-    [ -f "$LOCAL_BINARY" ] || die "AI_GUARD_BINARY does not point to a file: $LOCAL_BINARY"
+# --- helpers used by both paths ---------------------------------------------
+# Copy a PyInstaller onedir bundle directory into ${BUNDLE_DIR} and symlink
+# the launcher at ${BIN_DIR}/ai-guard so the user has a stable PATH entry.
+install_bundle() {
+    src="$1"
+    [ -d "$src" ] || die "expected bundle directory, got: $src"
+    [ -x "${src}/ai-guard" ] || die "no launcher at ${src}/ai-guard"
+
+    mkdir -p "$(dirname "$BUNDLE_DIR")"
+    # Clean any previous bundle so leftover files from an older release
+    # don't shadow renamed ones.
+    rm -rf "$BUNDLE_DIR"
+    cp -R "$src" "$BUNDLE_DIR"
+    chmod +x "${BUNDLE_DIR}/ai-guard"
+
     mkdir -p "$BIN_DIR"
-    cp "$LOCAL_BINARY" "${BIN_DIR}/ai-guard"
-    chmod +x "${BIN_DIR}/ai-guard"
-    ok "installed to ${BIN_DIR}/ai-guard"
-    detail "from ${LOCAL_BINARY}"
+    rm -f "${BIN_DIR}/ai-guard"
+    ln -s "${BUNDLE_DIR}/ai-guard" "${BIN_DIR}/ai-guard"
+}
+
+# --- local bundle shortcut ---------------------------------------------------
+if [ -n "$LOCAL_BUNDLE" ]; then
+    section "Local bundle"
+    [ -f "$LOCAL_BUNDLE" ] || die "AI_GUARD_BUNDLE does not point to a file: $LOCAL_BUNDLE"
+
+    LOCAL_TMP=$(mktemp -d)
+    trap 'rm -rf "$LOCAL_TMP"' EXIT INT TERM
+    tar -xzf "$LOCAL_BUNDLE" -C "$LOCAL_TMP" \
+        || die "could not extract $LOCAL_BUNDLE (expected a tar.gz)"
+
+    # The tarball's top-level directory matches the release artifact name
+    # (e.g. ``ai-guard-linux-x86_64``); we don't care about the exact name,
+    # only that it's the single dir inside the archive.
+    extracted=$(find "$LOCAL_TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
+    [ -n "$extracted" ] || die "no bundle directory inside $LOCAL_BUNDLE"
+
+    install_bundle "$extracted"
+    ok "installed bundle to ${BUNDLE_DIR}"
+    detail "from ${LOCAL_BUNDLE}"
+    ok "symlinked launcher at ${BIN_DIR}/ai-guard"
 
     case ":${PATH:-}:" in
         *":${BIN_DIR}:"*) : ;;
@@ -214,9 +254,8 @@ fi
 ok "$VERSION"
 
 # --- download ----------------------------------------------------------------
-section "Download binary"
+section "Download bundle"
 
-mkdir -p "$BIN_DIR"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
@@ -230,24 +269,27 @@ download() {
     esac
 }
 
-action "fetching $ARTIFACT"
-download "${BASE}/${ARTIFACT}"        "${TMP}/${ARTIFACT}"
-download "${BASE}/${ARTIFACT}.sha256" "${TMP}/${ARTIFACT}.sha256"
+action "fetching $TARBALL"
+download "${BASE}/${TARBALL}"        "${TMP}/${TARBALL}"
+download "${BASE}/${TARBALL}.sha256" "${TMP}/${TARBALL}.sha256"
 
 # Verify the checksum. The .sha256 file uses the standard
 # `<hash>  <filename>` format, which both sha256sum and shasum understand.
 (
     cd "$TMP"
     case "$SHA_TOOL" in
-        sha256sum) sha256sum -c "${ARTIFACT}.sha256" >/dev/null ;;
-        shasum)    shasum -a 256 -c "${ARTIFACT}.sha256" >/dev/null ;;
+        sha256sum) sha256sum -c "${TARBALL}.sha256" >/dev/null ;;
+        shasum)    shasum -a 256 -c "${TARBALL}.sha256" >/dev/null ;;
     esac
 )
 ok "checksum verified"
 
-chmod +x "${TMP}/${ARTIFACT}"
-mv "${TMP}/${ARTIFACT}" "${BIN_DIR}/ai-guard"
-ok "installed to ${BIN_DIR}/ai-guard"
+# Extract the onedir bundle into a sibling dir under ${TMP} and install it.
+# The tarball's top-level directory is the artifact name (e.g. ``ai-guard-linux-x86_64``).
+tar -xzf "${TMP}/${TARBALL}" -C "$TMP"
+install_bundle "${TMP}/${ARTIFACT}"
+ok "installed bundle to ${BUNDLE_DIR}"
+ok "symlinked launcher at ${BIN_DIR}/ai-guard"
 
 case ":${PATH:-}:" in
     *":${BIN_DIR}:"*) : ;;

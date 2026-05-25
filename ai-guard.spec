@@ -122,14 +122,22 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="ai-guard",
     debug=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     console=True,
-    onefile=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="ai-guard",
 )

@@ -98,15 +98,20 @@ def claude_present(tmp_home: Path) -> Path:
 
 @pytest.fixture
 def staged_binary(tmp_home: Path) -> Path:
-    """Pretend the bootstrap installer already dropped the binary in place.
+    """Pretend the bootstrap installer already laid out the onedir bundle.
 
     Required for install runs that exercise service registration (the
     production install flow refuses to wire the service if there is no
-    binary for the wrapper to exec).
+    bundle launcher on disk for the wrapper to exec).
     """
+    paths.bundle_dir().mkdir(parents=True, exist_ok=True)
+    paths.bundle_executable().write_text("#!/bin/sh\nexit 0\n")
+    paths.bundle_executable().chmod(0o755)
+
     paths.local_bin_dir().mkdir(parents=True, exist_ok=True)
-    paths.binary_path().write_text("#!/bin/sh\nexit 0\n")
-    paths.binary_path().chmod(0o755)
+    if paths.binary_path().exists() or paths.binary_path().is_symlink():
+        paths.binary_path().unlink()
+    paths.binary_path().symlink_to(paths.bundle_executable())
     return paths.binary_path()
 
 
@@ -718,10 +723,12 @@ class TestCli:
         monkeypatch.setenv("DD_APP_KEY", "a")
         monkeypatch.setenv("DD_SERVICE", "ai-guard")
 
-        # Drop a fake binary + log so we can check what survives.
+        # Drop a fake onedir bundle + symlink + log so we can check what survives.
+        paths.bundle_dir().mkdir(parents=True, exist_ok=True)
+        paths.bundle_executable().write_text("#!/bin/sh\nexit 0\n")
+        paths.bundle_executable().chmod(0o755)
         paths.local_bin_dir().mkdir(parents=True, exist_ok=True)
-        paths.binary_path().write_text("#!/bin/sh\nexit 0\n")
-        paths.binary_path().chmod(0o755)
+        paths.binary_path().symlink_to(paths.bundle_executable())
 
         paths.state_dir().mkdir(parents=True, exist_ok=True)
         paths.log_file_path().write_text("log line\n")
@@ -740,6 +747,8 @@ class TestCli:
         assert not paths.config_env_path().exists()
         assert not paths.wrapper_path().exists()
         assert not paths.binary_path().exists()
+        assert not paths.binary_path().is_symlink()
+        assert not paths.bundle_dir().exists()
         # Hooks are gone from the settings file.
         data = json.loads(claude_present.read_text())
         assert "hooks" not in data or data["hooks"] == {}
@@ -852,7 +861,7 @@ class TestCli:
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`uv run ai-guard install` without a built binary must exit non-zero
+        """`uv run ai-guard install` without a built bundle must exit non-zero
         with a clear error pointing at the bootstrap script — NOT silently write
         a wrapper that exec's a nonexistent path."""
         import sys as _sys
@@ -861,17 +870,17 @@ class TestCli:
         monkeypatch.setenv("DD_API_KEY", "k")
         monkeypatch.setenv("DD_APP_KEY", "a")
         monkeypatch.setenv("DD_SERVICE", "ai-guard")
-        # No binary at paths.binary_path() — that's the whole point of the test.
-        assert not paths.binary_path().exists()
+        # No bundle at paths.bundle_dir() — that's the whole point of the test.
+        assert not paths.bundle_executable().exists()
 
         result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert result.exit_code == 1
-        assert "no AI Guard binary" in result.output
+        assert "no AI Guard bundle" in result.output
         assert "pyinstaller" in result.output
         # The wrapper must not have been left behind pointing at a dangling path.
         assert not paths.wrapper_path().exists()
 
-    def test_install_frozen_binary_copies_itself_to_target(
+    def test_install_frozen_bundle_copies_itself_to_target(
         self,
         tmp_home: Path,
         stub_platform: None,
@@ -879,7 +888,7 @@ class TestCli:
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A frozen ai-guard binary running from anywhere else should copy itself
+        """A frozen ai-guard bundle running from anywhere else should copy itself
         into place so the generated wrapper has something to exec."""
         import sys as _sys
 
@@ -887,22 +896,30 @@ class TestCli:
         monkeypatch.setenv("DD_APP_KEY", "a")
         monkeypatch.setenv("DD_SERVICE", "ai-guard")
         assert not paths.binary_path().exists()
+        assert not paths.bundle_dir().exists()
 
-        # Pretend we're running as a frozen binary at a different location.
+        # Pretend we're running as a frozen onedir bundle at a different location.
         elsewhere = tmp_home / "downloads" / "ai-guard"
-        elsewhere.parent.mkdir(parents=True, exist_ok=True)
-        elsewhere.write_text("#!/bin/sh\necho not actually executed\n")
-        elsewhere.chmod(0o755)
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        elsewhere_launcher = elsewhere / "ai-guard"
+        elsewhere_launcher.write_text("#!/bin/sh\necho not actually executed\n")
+        elsewhere_launcher.chmod(0o755)
+        (elsewhere / "_internal").mkdir()
+        (elsewhere / "_internal" / "data.bin").write_text("pretend bundled module")
+
         monkeypatch.setattr(_sys, "frozen", True, raising=False)
-        monkeypatch.setattr(_sys, "executable", str(elsewhere))
+        monkeypatch.setattr(_sys, "executable", str(elsewhere_launcher))
 
         result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert result.exit_code == 0, result.output + str(result.exception or "")
 
-        # Binary is now where the wrapper expects it.
-        assert paths.binary_path().exists()
-        assert paths.binary_path().stat().st_mode & 0o755 == 0o755
-        # And the wrapper points at it.
+        # The whole bundle is now where the installer expects it.
+        assert paths.bundle_executable().exists()
+        assert (paths.bundle_dir() / "_internal" / "data.bin").exists()
+        # And the user-facing launcher on PATH is a symlink to the bundled exec.
+        assert paths.binary_path().is_symlink()
+        assert paths.binary_path().resolve() == paths.bundle_executable().resolve()
+        # The wrapper still references the stable user-facing path.
         assert str(paths.binary_path()) in paths.wrapper_path().read_text()
 
 
@@ -998,12 +1015,14 @@ class TestMultiAgent:
         fake_cfg.parent.mkdir(parents=True, exist_ok=True)
         fake_cfg.write_text(json.dumps({"FAKE_API_BASE_URL": "https://my-fake.example/v1"}))
 
-        # Pre-stage a fake binary at the expected location; install refuses to
-        # wire the service otherwise (production install would normally have the
-        # bootstrap script drop the binary in place first).
+        # Pre-stage a fake onedir bundle at the expected location; install
+        # refuses to wire the service otherwise (production install would
+        # normally have the bootstrap script drop the bundle in place first).
+        paths.bundle_dir().mkdir(parents=True, exist_ok=True)
+        paths.bundle_executable().write_text("#!/bin/sh\nexit 0\n")
+        paths.bundle_executable().chmod(0o755)
         paths.local_bin_dir().mkdir(parents=True, exist_ok=True)
-        paths.binary_path().write_text("#!/bin/sh\nexit 0\n")
-        paths.binary_path().chmod(0o755)
+        paths.binary_path().symlink_to(paths.bundle_executable())
 
         monkeypatch.setenv("DD_API_KEY", "k")
         monkeypatch.setenv("DD_APP_KEY", "a")

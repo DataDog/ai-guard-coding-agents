@@ -55,22 +55,31 @@ jobs:
       - name: Build executable
         run: pyinstaller ai-guard.spec
 
-      - name: Rename artifact (Unix)
-        if: runner.os != 'Windows'
+      # PyInstaller's onedir output is ``dist/ai-guard/`` (launcher +
+      # ``_internal/`` siblings). Rename the directory so the tarball's
+      # top-level entry matches the platform artifact name install.sh expects.
+      - name: Rename bundle
         run: mv dist/ai-guard dist/${{ matrix.artifact }}
 
-      - name: Rename artifact (Windows)
+      - name: Package bundle (Unix)
+        if: runner.os != 'Windows'
+        working-directory: dist
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+
+      - name: Package bundle (Windows)
         if: runner.os == 'Windows'
-        run: mv dist/ai-guard.exe dist/${{ matrix.artifact }}
+        shell: pwsh
+        working-directory: dist
+        run: Compress-Archive -Path "${{ matrix.artifact }}" -DestinationPath "${{ matrix.artifact }}.zip"
 
       - name: Generate SHA-256 sidecar (Unix)
         if: runner.os != 'Windows'
         working-directory: dist
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+            sha256sum "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
           else
-            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+            shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
           fi
 
       - name: Generate SHA-256 sidecar (Windows)
@@ -78,12 +87,21 @@ jobs:
         shell: pwsh
         working-directory: dist
         run: |
-          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}").Hash.ToLower()
-          "$hash  ${{ matrix.artifact }}" | Out-File -Encoding ascii -NoNewline "${{ matrix.artifact }}.sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}.zip").Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii -NoNewline "${{ matrix.artifact }}.zip.sha256"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: runner.os != 'Windows'
         with:
           name: ${{ matrix.artifact }}
           path: |
-            dist/${{ matrix.artifact }}
-            dist/${{ matrix.artifact }}.sha256
+            dist/${{ matrix.artifact }}.tar.gz
+            dist/${{ matrix.artifact }}.tar.gz.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: runner.os == 'Windows'
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}.zip
+            dist/${{ matrix.artifact }}.zip.sha256
