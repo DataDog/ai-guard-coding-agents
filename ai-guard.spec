@@ -25,18 +25,14 @@ a = Analysis(
         "aiguard.proxy.server",
         "aiguard.installer",
         "aiguard.installer.agent",
-        "aiguard.installer.backup",
-        "aiguard.installer.config",
         "aiguard.installer.installer",
-        "aiguard.installer.paths",
-        "aiguard.installer.prompt",
+        "aiguard.installer.ui",
         # service.manager picks one of these at runtime via platform check, so
         # PyInstaller's static analyser can't see the conditional import.
         "aiguard.installer.service",
         "aiguard.installer.service.manager",
         "aiguard.installer.service.launchd",
         "aiguard.installer.service.systemd_user",
-        "aiguard.installer.service.readiness",
         "aiguard.installer.service.wrapper",
         # Templates are accessed via importlib.resources.files(__package__);
         # the package itself must be importable for the lookup to find the
@@ -46,7 +42,7 @@ a = Analysis(
         "rich.console",
         "rich.panel",
         "rich.table",
-        # Lazily imported from aiguard.installer.prompt only on a real TTY.
+        # Lazily imported from aiguard.installer.ui only on a real TTY.
         "pwinput",
         # aiohttp core + C extensions
         "aiohttp",
@@ -68,7 +64,6 @@ a = Analysis(
         "aiohttp.payload",
         "aiohttp.helpers",
         "aiohttp.tcp_helpers",
-        "aiohttp._helpers",
         "aiohttp._http_parser",
         "aiohttp._http_writer",
         "aiohttp._websocket",
