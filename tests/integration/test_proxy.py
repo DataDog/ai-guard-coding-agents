@@ -236,19 +236,15 @@ class TestProxyPassthrough:
         main_history = storage.load_messages("claude", session_id)
         sub_history = storage.load_messages("claude", session_id, "a14cb")
 
-        assert any(
-            "main: write a haiku" in str(m.get("content", "")) for m in main_history
+        assert any("main: write a haiku" in str(m.get("content", "")) for m in main_history)
+        assert all("sub:" not in str(m.get("content", "")) for m in main_history), (
+            "subagent prompt leaked into the main session slot"
         )
-        assert all(
-            "sub:" not in str(m.get("content", "")) for m in main_history
-        ), "subagent prompt leaked into the main session slot"
 
-        assert any(
-            "sub: list the project files" in str(m.get("content", "")) for m in sub_history
+        assert any("sub: list the project files" in str(m.get("content", "")) for m in sub_history)
+        assert all("main:" not in str(m.get("content", "")) for m in sub_history), (
+            "main session leaked into the subagent slot"
         )
-        assert all(
-            "main:" not in str(m.get("content", "")) for m in sub_history
-        ), "main session leaked into the subagent slot"
 
     async def test_claude_ua_with_off_path_still_forwards_upstream(
         self, proxy_client, anthropic_response_body, storage_root: Path

@@ -170,9 +170,7 @@ def test_load_honors_dd_ai_guard_home(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_default_root_is_xdg_state_home(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DD_AI_GUARD_HOME", raising=False)
     storage.save_messages("claude", "s8", [Message(role="user", content="x")])
-    assert (
-        tmp_home / ".local" / "state" / "ai-guard" / "claude" / "s8" / "main.json"
-    ).is_file()
+    assert (tmp_home / ".local" / "state" / "ai-guard" / "claude" / "s8" / "main.json").is_file()
 
 
 # ── Subagent slot isolation ───────────────────────────────────────────────────
@@ -184,9 +182,7 @@ class TestSubagentSlots:
 
     def test_subagent_slot_written_to_distinct_file(self, tmp_home: Path) -> None:
         storage.save_messages("claude", "s", [Message(role="user", content="main")])
-        storage.save_messages(
-            "claude", "s", [Message(role="user", content="sub")], agent_id="a7"
-        )
+        storage.save_messages("claude", "s", [Message(role="user", content="sub")], agent_id="a7")
         assert (paths.state_dir() / "claude" / "s" / "main.json").is_file()
         assert (paths.state_dir() / "claude" / "s" / "a7.json").is_file()
 
@@ -212,12 +208,8 @@ class TestSubagentSlots:
 
     def test_delete_removes_main_and_all_subagent_slots(self, tmp_home: Path) -> None:
         storage.save_messages("claude", "s", [Message(role="user", content="main")])
-        storage.save_messages(
-            "claude", "s", [Message(role="user", content="a")], agent_id="a1"
-        )
-        storage.save_messages(
-            "claude", "s", [Message(role="user", content="b")], agent_id="a2"
-        )
+        storage.save_messages("claude", "s", [Message(role="user", content="a")], agent_id="a1")
+        storage.save_messages("claude", "s", [Message(role="user", content="b")], agent_id="a2")
 
         storage.delete_messages("claude", "s")
 
