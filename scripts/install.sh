@@ -188,6 +188,20 @@ if [ "$missing" -gt 0 ]; then
 fi
 
 # --- helpers used by both paths ---------------------------------------------
+# Hand off to ``ai-guard ${MODE}``. When this script is run via
+# ``curl … | sh`` our stdin is the curl pipe — already EOF by the time we
+# exec — so any prompt from the Python installer (e.g. ``Site (DD_SITE)``)
+# trips Click's EOF guard and prints ``Aborted!`` before the user can type.
+# Reattach stdin to /dev/tty when it's available so the handoff is
+# interactive; CI flows (no controlling terminal) fall through to the
+# original behaviour and are expected to pass ``--non-interactive``.
+handoff() {
+    if [ ! -t 0 ] && [ -r /dev/tty ]; then
+        exec < /dev/tty
+    fi
+    exec "${BIN_DIR}/ai-guard" "${MODE}" "$@"
+}
+
 # Copy a PyInstaller onedir bundle directory into ${BUNDLE_DIR} and symlink
 # the launcher at ${BIN_DIR}/ai-guard so the user has a stable PATH entry.
 install_bundle() {
@@ -233,7 +247,7 @@ if [ -n "$LOCAL_BUNDLE" ]; then
            detail "export PATH=\"${BIN_DIR}:\$PATH\"" ;;
     esac
 
-    exec "${BIN_DIR}/ai-guard" "${MODE}" "$@"
+    handoff "$@"
 fi
 
 # --- version resolution ------------------------------------------------------
@@ -297,4 +311,4 @@ case ":${PATH:-}:" in
 esac
 
 # --- handoff -----------------------------------------------------------------
-exec "${BIN_DIR}/ai-guard" "${MODE}" "$@"
+handoff "$@"
