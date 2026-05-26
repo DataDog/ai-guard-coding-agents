@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -23,6 +22,7 @@ from aiohttp.test_utils import TestServer
 from ddtrace.appsec.ai_guard import AIGuardAbortError, Message
 
 from aiguard.claude.proxy import ClaudeProxy
+from aiguard.proxy import server as proxy_server
 from aiguard.proxy.server import Proxy
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,11 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def claude_user_json(tmp_home: Path) -> str:
-    """Drop a sample ~/.claude.json into tmp_home; return the email."""
-    src = FIXTURE_DIR / "claude_dot_json.json"
-    shutil.copyfile(src, tmp_home / ".claude.json")
-    data = json.loads(src.read_text())
-    return data["oauthAccount"]["emailAddress"]
+def fake_user_id(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Pin ``proxy.server.fetch_user_id`` to a deterministic ``host/user`` value."""
+    value = "test-host/test-user"
+    monkeypatch.setattr(proxy_server, "fetch_user_id", lambda: value)
+    return value
 
 
 @pytest.fixture

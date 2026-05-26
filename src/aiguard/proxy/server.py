@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import logging
 import os
 import socket
@@ -297,6 +298,25 @@ class Proxy:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def fetch_user_id() -> str:
+    """Return ``<hostname>/<os_user>`` for the current process.
+
+    Portable across Linux, macOS, and Windows: ``socket.gethostname`` works
+    everywhere, and ``getpass.getuser`` consults ``LOGNAME``/``USER``/
+    ``LNAME``/``USERNAME`` before falling back to ``pwd`` on POSIX. Either
+    part falls back to ``"unknown"`` if it can't be determined.
+    """
+    try:
+        hostname = socket.gethostname() or "unknown"
+    except OSError:
+        hostname = "unknown"
+    try:
+        user = getpass.getuser() or "unknown"
+    except Exception:
+        user = "unknown"
+    return f"{hostname}/{user}"
 
 
 def _response_headers(up: aiohttp.ClientResponse) -> dict[str, str]:
