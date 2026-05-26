@@ -73,9 +73,14 @@ COPY docker/claude/entrypoint.sh /entrypoint.sh
 # ── Claude settings ───────────────────────────────────────────────────────────
 COPY docker/claude/claude-settings.json /home/claude/.claude/settings.json
 
+# ── Install ai-guard ─────────────────────────────────────────────────────────
+COPY --from=builder /build/dist/ai-guard /home/claude/.local/share/ai-guard
+
 # ── Fix permissions ───────────────────────────────────────────────────────────
-RUN chmod 755 /entrypoint.sh \
-    && chown -R claude:claude /home/claude/.claude
+RUN mkdir -p /home/claude/.local/bin \
+    && ln -s /home/claude/.local/share/ai-guard/ai-guard /home/claude/.local/bin/ai-guard \
+    && chown -R claude:claude /home/claude \
+    && chmod 755 /entrypoint.sh
 
 USER claude
 ENV HOME=/home/claude \
@@ -86,13 +91,10 @@ ENV HOME=/home/claude \
     GIT_SSL_CAINFO=/tmp/ca-bundle.pem \
     CERT=/mitmproxy-certs/mitmproxy-ca-cert.pem
 
-ENV PATH="/home/claude/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ── Claude Code CLI ───────────────────────────────────────────────────────────
 RUN npm install -g @anthropic-ai/claude-code@2.1.121
-
-# ── Install ai-guard ─────────────────────────────────────────────────────────
-COPY --from=builder /build/dist/ai-guard /usr/local/bin/ai-guard
 
 # ── Working directory for interactive sessions ────────────────────────────────
 WORKDIR /home/claude

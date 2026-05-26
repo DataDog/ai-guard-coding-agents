@@ -30,7 +30,7 @@ services:
     volumes:
       - claude-home:/home/claude
       - mitmproxy-data:/mitmproxy-certs:ro
-      - ./docker/.ai_guard:/home/claude/.ai_guard
+      - ./docker/.ai_guard:/home/claude/.local/state/ai-guard
 
 volumes:
   mitmproxy-data:
