@@ -21,8 +21,8 @@ import pytest
 from aiohttp.test_utils import TestServer
 from ddtrace.appsec.ai_guard import AIGuardAbortError, Message
 
+from aiguard import utils
 from aiguard.claude.proxy import ClaudeProxy
-from aiguard.proxy import server as proxy_server
 from aiguard.proxy.server import Proxy
 
 logger = logging.getLogger(__name__)
@@ -52,9 +52,9 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def fake_user_id(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Pin ``proxy.server.fetch_user_id`` to a deterministic ``host/user`` value."""
+    """Pin ``aiguard.utils.fetch_user_id`` to a deterministic ``host/user`` value."""
     value = "test-host/test-user"
-    monkeypatch.setattr(proxy_server, "fetch_user_id", lambda: value)
+    monkeypatch.setattr(utils, "fetch_user_id", lambda: value)
     return value
 
 

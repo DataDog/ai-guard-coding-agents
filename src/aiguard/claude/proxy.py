@@ -28,8 +28,8 @@ from ddtrace.appsec.ai_guard import (
     new_ai_guard_client,
 )
 
+from aiguard import utils
 from aiguard.constants import AIGuardConstants
-from aiguard.proxy import server as proxy_server
 from aiguard.proxy.server import ProxyHandler
 from aiguard.proxy.util import parse_sse
 from aiguard.storage import delete_messages, load_messages
@@ -244,7 +244,7 @@ def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
     if "model" in event:
         tags[AIGuardConstants.MODEL_TAG] = event["model"]
 
-    tags[AIGuardConstants.USER_ID_TAG] = proxy_server.fetch_user_id()
+    tags[AIGuardConstants.USER_ID_TAG] = utils.fetch_user_id()
 
     tags[AIGuardConstants.SESSION_ID_TAG] = event.get("session_id", "")
     agent_id = event.get("agent_id", "")
