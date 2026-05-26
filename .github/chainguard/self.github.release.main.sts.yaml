@@ -1,0 +1,18 @@
+# Policy for: .github/workflows/release.yml in DataDog/ai-guard-coding-agents
+# Allows release-please to create the release PR (and the corresponding
+# release/tag when that PR merges) on this same repo. Required because the
+# default GITHUB_TOKEN is not permitted to create or approve pull requests
+# under DataDog's GitHub Actions org settings.
+
+issuer: https://token.actions.githubusercontent.com
+subject: repo:DataDog/ai-guard-coding-agents:ref:refs/heads/main
+
+claim_pattern:
+  event_name: push
+  job_workflow_ref: "DataDog/ai-guard-coding-agents/\\.github/workflows/release\\.yml@refs/heads/main"
+  ref: refs/heads/main
+  repository: DataDog/ai-guard-coding-agents
+
+permissions:
+  contents: write       # branch, tag, and release creation
+  pull_requests: write  # release PR creation/update

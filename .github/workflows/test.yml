@@ -22,8 +22,12 @@ on:
 permissions:
   contents: read
 
+# In a reusable-workflow call, `github.workflow` resolves to the *caller's*
+# workflow name — so `${{ github.workflow }}-${{ github.ref }}` here would
+# collide with the caller's concurrency group and deadlock both runs. Use a
+# literal prefix to keep the group unique to this workflow.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: test-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
