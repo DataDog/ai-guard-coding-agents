@@ -159,9 +159,7 @@ class TestFetchUserId:
         monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
         assert utils.fetch_user_id() == "alice@my-laptop"
 
-    def test_falls_back_when_hostname_unavailable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_when_hostname_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise() -> str:
             raise OSError("no host")
 
@@ -169,9 +167,7 @@ class TestFetchUserId:
         monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
         assert utils.fetch_user_id() == "alice@-"
 
-    def test_falls_back_when_user_unavailable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_when_user_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise() -> str:
             raise OSError("no user")
 
