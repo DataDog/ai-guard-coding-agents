@@ -23,7 +23,7 @@ class TestFetchUserId:
         monkeypatch.setattr(proxy_server.getpass, "getuser", lambda: "alice")
         assert fetch_user_id() == "my-laptop/alice"
 
-    def test_falls_back_to_unknown_when_hostname_unavailable(
+    def test_falls_back_when_hostname_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def _raise() -> str:
@@ -31,9 +31,9 @@ class TestFetchUserId:
 
         monkeypatch.setattr(proxy_server.socket, "gethostname", _raise)
         monkeypatch.setattr(proxy_server.getpass, "getuser", lambda: "alice")
-        assert fetch_user_id() == "unknown/alice"
+        assert fetch_user_id() == "-/alice"
 
-    def test_falls_back_to_unknown_when_user_unavailable(
+    def test_falls_back_when_user_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def _raise() -> str:
@@ -41,9 +41,9 @@ class TestFetchUserId:
 
         monkeypatch.setattr(proxy_server.socket, "gethostname", lambda: "my-laptop")
         monkeypatch.setattr(proxy_server.getpass, "getuser", _raise)
-        assert fetch_user_id() == "my-laptop/unknown"
+        assert fetch_user_id() == "my-laptop/-"
 
     def test_falls_back_when_hostname_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(proxy_server.socket, "gethostname", lambda: "")
         monkeypatch.setattr(proxy_server.getpass, "getuser", lambda: "alice")
-        assert fetch_user_id() == "unknown/alice"
+        assert fetch_user_id() == "-/alice"

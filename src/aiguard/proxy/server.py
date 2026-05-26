@@ -306,16 +306,18 @@ def fetch_user_id() -> str:
     Portable across Linux, macOS, and Windows: ``socket.gethostname`` works
     everywhere, and ``getpass.getuser`` consults ``LOGNAME``/``USER``/
     ``LNAME``/``USERNAME`` before falling back to ``pwd`` on POSIX. Either
-    part falls back to ``"unknown"`` if it can't be determined.
+    part falls back to ``"-"`` if it can't be determined.
     """
     try:
-        hostname = socket.gethostname() or "unknown"
+        hostname = socket.gethostname() or "-"
     except OSError:
-        hostname = "unknown"
+        logger.debug("fetch_user_id: socket.gethostname() failed", exc_info=True)
+        hostname = "-"
     try:
-        user = getpass.getuser() or "unknown"
+        user = getpass.getuser() or "-"
     except Exception:
-        user = "unknown"
+        logger.debug("fetch_user_id: getpass.getuser() failed", exc_info=True)
+        user = "-"
     return f"{hostname}/{user}"
 
 
