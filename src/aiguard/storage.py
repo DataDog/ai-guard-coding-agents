@@ -6,14 +6,16 @@
 
 """Per-session conversation message storage.
 
-Layout: ``$XDG_STATE_HOME/ai-guard/<agent>/<session_id>.json`` — one JSON array
-of Message dicts per session, in observation order. The state root can be
-overridden via ``DD_AI_GUARD_HOME``.
+Layout: ``$XDG_STATE_HOME/ai-guard/<agent>/<session_id>/<slot>.json`` — one JSON
+array of Message dicts per slot, in observation order. The slot is ``main`` for
+the parent session and the subagent's ``agent_id`` for sidechain calls, so
+subagent and main-session histories never overwrite each other. The state root
+can be overridden via ``DD_AI_GUARD_HOME``.
 
-``session_id`` and ``agent`` flow in from request metadata that the proxy does
-not control, so the resolved path is checked to stay within the storage root;
-anything else short-circuits as if the session did not exist (load returns
-``[]``, save/delete are no-ops + log).
+``agent``, ``session_id`` and ``agent_id`` flow in from request metadata that
+the proxy does not control, so the resolved path is checked to stay within the
+storage root; anything else short-circuits as if the session did not exist
+(load returns ``[]``, save/delete are no-ops + log).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 from pathlib import Path
 
 from ddtrace.appsec.ai_guard import Message
@@ -35,16 +38,43 @@ logger = logging.getLogger("ai_guard")
 
 _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
+# Slot name used for the parent session inside ``<agent>/<session_id>/``.
+# Subagents land in sibling files named after their ``agent_id``.
+_MAIN_SLOT = "main"
 
-def _session_file(agent: str, session_id: str) -> Path | None:
-    """Return the absolute path of a session's JSON file.
 
-    ``None`` if the resolved path would escape the storage root (defense against
-    path traversal via attacker-controlled ``agent``/``session_id``).
+def _session_file(agent: str, session_id: str, agent_id: str = "") -> Path | None:
+    """Return the absolute path of a session slot's JSON file.
+
+    Layout is ``<root>/<agent>/<session_id>/<slot>.json``, with ``slot`` set to
+    the subagent ``agent_id`` for sidechain traffic and ``main`` for the
+    parent session. ``None`` if the resolved path would escape the storage
+    root (defense against path traversal via attacker-controlled
+    ``agent``/``session_id``/``agent_id``).
     """
+    slot = agent_id or _MAIN_SLOT
     try:
         root = state_dir().resolve(strict=False)
-        candidate = (root / agent / f"{session_id}.json").resolve(strict=False)
+        candidate = (root / agent / session_id / f"{slot}.json").resolve(strict=False)
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        logger.warning(
+            "storage: rejecting agent/session_id/agent_id that escapes the storage root "
+            "(agent=%r session_id=%r agent_id=%r)",
+            agent,
+            session_id,
+            agent_id,
+        )
+        return None
+    return candidate
+
+
+def _session_dir(agent: str, session_id: str) -> Path | None:
+    """Return the directory holding every slot file for a session, or ``None``
+    if the resolved path would escape the storage root."""
+    try:
+        root = state_dir().resolve(strict=False)
+        candidate = (root / agent / session_id).resolve(strict=False)
         candidate.relative_to(root)
     except (OSError, ValueError):
         logger.warning(
@@ -68,11 +98,15 @@ def _quote(value: str) -> str:
     return shlex.quote(value)
 
 
-def load_messages(agent: str, session_id: str) -> list[Message]:
-    """Return the full message list for a session. ``[]`` if absent or unreadable."""
+def load_messages(agent: str, session_id: str, agent_id: str = "") -> list[Message]:
+    """Return the full message list for a session slot. ``[]`` if absent or unreadable.
+
+    ``agent_id`` selects the subagent slot; the empty string targets the parent
+    session.
+    """
     if not agent or not session_id:
         return []
-    path = _session_file(agent, session_id)
+    path = _session_file(agent, session_id, agent_id)
     if path is None or not path.exists():
         return []
     try:
@@ -83,11 +117,13 @@ def load_messages(agent: str, session_id: str) -> list[Message]:
     return data if isinstance(data, list) else []
 
 
-def save_messages(agent: str, session_id: str, messages: list[Message]) -> None:
-    """Overwrite the session file with ``messages``."""
+def save_messages(
+    agent: str, session_id: str, messages: list[Message], *, agent_id: str = ""
+) -> None:
+    """Overwrite the slot file for ``(session_id, agent_id)`` with ``messages``."""
     if not agent or not session_id or messages is None:
         return
-    path = _session_file(agent, session_id)
+    path = _session_file(agent, session_id, agent_id)
     if path is None:
         return
     try:
@@ -103,14 +139,14 @@ def save_messages(agent: str, session_id: str, messages: list[Message]) -> None:
 
 
 def delete_messages(agent: str, session_id: str) -> None:
-    """Remove the session file. No-op if it doesn't exist."""
+    """Remove the session's stored history, including every subagent slot."""
     if not agent or not session_id:
         return
-    path = _session_file(agent, session_id)
-    if path is None:
+    path = _session_dir(agent, session_id)
+    if path is None or not path.exists():
         return
     try:
-        path.unlink(missing_ok=True)
+        shutil.rmtree(path)
     except OSError:
         logger.error("failed to delete %s", path, exc_info=True)
 

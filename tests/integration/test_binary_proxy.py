@@ -215,7 +215,7 @@ def _post_messages(port: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]
 
 
 def _wait_for_storage(home: Path, agent: str, session_id: str, timeout: float = 5.0) -> Path:
-    path = home / agent / f"{session_id}.json"
+    path = home / agent / session_id / "main.json"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not path.exists():
         time.sleep(0.05)
@@ -248,7 +248,7 @@ def test_binary_passthrough_persists_messages(
     assert [c["path"] for c in anthropic_mock["calls"]] == ["/v1/messages"]
 
     # The binary persisted the conversation under
-    # $DD_AI_GUARD_HOME/claude/<session>.json.
+    # $DD_AI_GUARD_HOME/claude/<session>/main.json.
     path = _wait_for_storage(proxy_process["home"], "claude", session_id)
     assert path.exists(), f"expected session file at {path}"
 

@@ -182,6 +182,75 @@ class TestProxyPassthrough:
         user_texts = [m for m in after_turn2 if m.get("role") == "user"]
         assert sum(1 for m in user_texts if "Anything else?" in str(m.get("content", ""))) == 1
 
+    async def test_subagent_and_main_session_persist_to_separate_slots(
+        self,
+        proxy_client,
+        storage_root: Path,
+        anthropic_response_body: dict[str, Any],
+    ) -> None:
+        """Main session and subagent share the Claude session_id but live in
+        separate slot files — neither overwrites the other. This is the
+        regression guard for the original "conversations mixed in the proxy"
+        bug: storage keyed only by session_id meant the last writer won."""
+
+        async def handler(request: aiohttp.web.Request) -> aiohttp.web.Response:
+            return aiohttp.web.json_response(anthropic_response_body)
+
+        client = await proxy_client(handler)
+        session_id = "sess-shared"
+
+        main_body = {
+            "model": "claude-sonnet-4-5",
+            "metadata": {
+                "user_id": json.dumps({"session_id": session_id, "account_uuid": "acct-1"})
+            },
+            "messages": [{"role": "user", "content": "main: write a haiku"}],
+        }
+        sub_body = {
+            "model": "claude-sonnet-4-5",
+            "metadata": {
+                "user_id": json.dumps(
+                    {
+                        "session_id": session_id,
+                        "account_uuid": "acct-1",
+                        "agent_id": "a14cb",
+                    }
+                )
+            },
+            "messages": [{"role": "user", "content": "sub: list the project files"}],
+        }
+
+        # Interleave: subagent fires between two main-session turns.
+        async with client.post(
+            "/v1/messages", json=main_body, headers={"User-Agent": CLAUDE_UA}
+        ):
+            pass
+        async with client.post(
+            "/v1/messages", json=sub_body, headers={"User-Agent": CLAUDE_UA}
+        ):
+            pass
+        async with client.post(
+            "/v1/messages", json=main_body, headers={"User-Agent": CLAUDE_UA}
+        ):
+            pass
+
+        main_history = storage.load_messages("claude", session_id)
+        sub_history = storage.load_messages("claude", session_id, "a14cb")
+
+        assert any(
+            "main: write a haiku" in str(m.get("content", "")) for m in main_history
+        )
+        assert all(
+            "sub:" not in str(m.get("content", "")) for m in main_history
+        ), "subagent prompt leaked into the main session slot"
+
+        assert any(
+            "sub: list the project files" in str(m.get("content", "")) for m in sub_history
+        )
+        assert all(
+            "main:" not in str(m.get("content", "")) for m in sub_history
+        ), "main session leaked into the subagent slot"
+
     async def test_claude_ua_with_off_path_still_forwards_upstream(
         self, proxy_client, anthropic_response_body, storage_root: Path
     ) -> None:
@@ -319,7 +388,7 @@ class _StubHandler(ProxyHandler):
         return self._ua_substring in request.headers.get("User-Agent", "")
 
     def parse_request(self, request: aiohttp.web.Request, body: bytes):
-        return "", []
+        return "", "", []
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes):
         return []
@@ -478,7 +547,7 @@ class _RecordingHandler(ProxyHandler):
         return False
 
     def parse_request(self, request: aiohttp.web.Request, body: bytes):
-        return "", []
+        return "", "", []
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes):
         return []

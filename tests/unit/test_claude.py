@@ -15,7 +15,7 @@ Grouped into classes by what's being tested:
   * :class:`TestBlockedTool` — ``_blocked_tool_response``.
   * :class:`TestRequestParser` — ``_parse_request_body``.
   * :class:`TestAnthropicMessageParser` — ``_parse_anthropic_message``.
-  * :class:`TestSessionIdParser` — ``_fetch_session_id``.
+  * :class:`TestSessionKeysParser` — ``_fetch_session_keys``.
   * :class:`TestSSEResponseParser` — ``_parse_sse_body``.
   * :class:`TestHandleHookSpans` — span-emitting hooks (Session/Subagent).
   * :class:`TestHandleHookToolUse` — Pre/Post tool hooks.
@@ -40,7 +40,7 @@ from aiguard.claude.proxy import (
     ClaudeProxy,
     _ai_guard_ui_url,
     _blocked_tool_response,
-    _fetch_session_id,
+    _fetch_session_keys,
     _parse_anthropic_message,
     _parse_request_body,
     _parse_sse_body,
@@ -123,18 +123,39 @@ class TestClaudeProxyMatches:
 
     def test_parse_request_returns_empty_for_non_messages_path(self) -> None:
         proxy = _proxy()
-        sid, msgs = proxy.parse_request(self._req("POST", "/v1/something_else"), b"{}")
-        assert (sid, msgs) == ("", [])
+        sid, aid, msgs = proxy.parse_request(self._req("POST", "/v1/something_else"), b"{}")
+        assert (sid, aid, msgs) == ("", "", [])
 
     def test_parse_request_returns_empty_for_non_post(self) -> None:
         proxy = _proxy()
-        sid, msgs = proxy.parse_request(self._req("GET", "/v1/messages"), b"{}")
-        assert (sid, msgs) == ("", [])
+        sid, aid, msgs = proxy.parse_request(self._req("GET", "/v1/messages"), b"{}")
+        assert (sid, aid, msgs) == ("", "", [])
 
     def test_parse_request_tolerates_invalid_json(self) -> None:
         proxy = _proxy()
-        sid, msgs = proxy.parse_request(self._req("POST", "/v1/messages"), b"{not json")
-        assert (sid, msgs) == ("", [])
+        sid, aid, msgs = proxy.parse_request(self._req("POST", "/v1/messages"), b"{not json")
+        assert (sid, aid, msgs) == ("", "", [])
+
+    def test_parse_request_extracts_subagent_agent_id(self) -> None:
+        proxy = _proxy()
+        body = json.dumps(
+            {
+                "metadata": {
+                    "user_id": json.dumps(
+                        {
+                            "session_id": "sess-abc",
+                            "account_uuid": "acct-1",
+                            "agent_id": "a14cb3bf47e9a6e48",
+                        }
+                    )
+                },
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ).encode()
+        sid, aid, msgs = proxy.parse_request(self._req("POST", "/v1/messages"), body)
+        assert sid == "sess-abc"
+        assert aid == "a14cb3bf47e9a6e48"
+        assert msgs and msgs[0]["role"] == "user"
 
 
 class TestBlockedTool:
@@ -422,8 +443,11 @@ class TestAnthropicMessageParser:
         assert _parse_anthropic_message({"content": "x"}) == []
 
 
-class TestSessionIdParser:
-    """``_fetch_session_id`` extracts the session id from ``metadata.user_id``."""
+class TestSessionKeysParser:
+    """``_fetch_session_keys`` extracts ``(session_id, agent_id)`` from
+    ``metadata.user_id``. Subagent calls share the parent's ``session_id`` but
+    add an ``agent_id`` so the proxy can route them to their own storage slot.
+    """
 
     def test_from_user_id_json(self) -> None:
         data = {
@@ -431,28 +455,52 @@ class TestSessionIdParser:
                 "user_id": json.dumps({"session_id": "sess-abc", "account_uuid": "acct-1"})
             }
         }
-        assert _fetch_session_id(data) == "sess-abc"
+        assert _fetch_session_keys(data) == ("sess-abc", "")
+
+    def test_subagent_call_returns_session_and_agent_id(self) -> None:
+        data = {
+            "metadata": {
+                "user_id": json.dumps(
+                    {
+                        "session_id": "sess-abc",
+                        "account_uuid": "acct-1",
+                        "agent_id": "a14cb3bf47e9a6e48",
+                    }
+                )
+            }
+        }
+        assert _fetch_session_keys(data) == ("sess-abc", "a14cb3bf47e9a6e48")
 
     def test_returns_empty_when_metadata_missing(self) -> None:
-        assert _fetch_session_id({}) == ""
+        assert _fetch_session_keys({}) == ("", "")
 
     def test_returns_empty_when_user_id_missing(self) -> None:
-        assert _fetch_session_id({"metadata": {}}) == ""
+        assert _fetch_session_keys({"metadata": {}}) == ("", "")
 
     def test_returns_empty_when_user_id_blank(self) -> None:
-        assert _fetch_session_id({"metadata": {"user_id": ""}}) == ""
+        assert _fetch_session_keys({"metadata": {"user_id": ""}}) == ("", "")
 
     def test_returns_empty_when_user_id_not_json(self) -> None:
-        assert _fetch_session_id({"metadata": {"user_id": "not-json"}}) == ""
+        assert _fetch_session_keys({"metadata": {"user_id": "not-json"}}) == ("", "")
 
     def test_returns_empty_when_user_id_not_an_object(self) -> None:
-        assert _fetch_session_id({"metadata": {"user_id": json.dumps(["not", "object"])}}) == ""
+        data = {"metadata": {"user_id": json.dumps(["not", "object"])}}
+        assert _fetch_session_keys(data) == ("", "")
 
     def test_returns_empty_when_session_id_field_absent(self) -> None:
-        assert _fetch_session_id({"metadata": {"user_id": json.dumps({"account_uuid": "x"})}}) == ""
+        data = {"metadata": {"user_id": json.dumps({"account_uuid": "x"})}}
+        assert _fetch_session_keys(data) == ("", "")
+
+    def test_ignores_non_string_agent_id(self) -> None:
+        data = {
+            "metadata": {
+                "user_id": json.dumps({"session_id": "sess-abc", "agent_id": 7})
+            }
+        }
+        assert _fetch_session_keys(data) == ("sess-abc", "")
 
     def test_tolerates_metadata_being_none(self) -> None:
-        assert _fetch_session_id({"metadata": None}) == ""
+        assert _fetch_session_keys({"metadata": None}) == ("", "")
 
 
 class TestSSEResponseParser:
@@ -572,11 +620,17 @@ class TestHandleHookSpans:
         self, tracer_recorder, tmp_home: Path
     ) -> None:
         storage.save_messages("claude", "s-end", [Message(role="user", content="hi")])
+        # Subagents ran under the same session — their slots must be cleared too.
+        storage.save_messages(
+            "claude", "s-end", [Message(role="user", content="sub")], agent_id="a7"
+        )
         assert storage.load_messages("claude", "s-end")
+        assert storage.load_messages("claude", "s-end", "a7")
 
         await _proxy().handle_hook("SessionEnd", json.dumps({"session_id": "s-end"}).encode())
 
         assert storage.load_messages("claude", "s-end") == []
+        assert storage.load_messages("claude", "s-end", "a7") == []
 
     async def test_session_end_without_session_id_is_a_no_op(
         self, tracer_recorder, tmp_home: Path
@@ -788,6 +842,92 @@ class TestHandleHookToolUse:
         messages, _ = fake_ai_guard.calls[0]
         assert messages[-1]["role"] == "tool"
         assert messages[-1]["content"] == "permission denied"
+
+    async def test_pre_tool_use_loads_subagent_slot_not_main(
+        self, tracer_recorder, tmp_home: Path, fake_ai_guard
+    ) -> None:
+        """A PreToolUse fired by a subagent must evaluate against the
+        subagent's own conversation, never the parent session's history."""
+        # Parent session: holds an unrelated conversation under the same sid.
+        storage.save_messages(
+            "claude",
+            "s-mix",
+            [Message(role="user", content="parent: please draft an email")],
+        )
+        # Subagent slot: pending tool call.
+        storage.save_messages(
+            "claude",
+            "s-mix",
+            [
+                Message(role="user", content="sub: read README"),
+                Message(
+                    role="assistant",
+                    tool_calls=[
+                        {
+                            "id": "tu1",
+                            "function": {"name": "Read", "arguments": '{"path":"README.md"}'},
+                        }
+                    ],
+                ),
+            ],
+            agent_id="a7",
+        )
+
+        await _proxy().handle_hook(
+            "PreToolUse",
+            json.dumps(
+                {
+                    "session_id": "s-mix",
+                    "agent_id": "a7",
+                    "tool_use_id": "tu1",
+                    "tool_name": "Read",
+                    "tool_input": {"path": "README.md"},
+                }
+            ).encode(),
+        )
+
+        messages, _ = fake_ai_guard.calls[0]
+        # The user message that AI Guard saw is the subagent's, not the parent's.
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert user_msgs[0]["content"] == "sub: read README"
+        assert all("parent:" not in str(m.get("content", "")) for m in messages)
+
+    async def test_post_tool_use_persists_into_subagent_slot(
+        self, tracer_recorder, tmp_home: Path, fake_ai_guard
+    ) -> None:
+        """PostToolUse for a subagent must read the subagent slot — proves the
+        agent_id routes through every tool-hook handler, not just PreToolUse."""
+        storage.save_messages(
+            "claude",
+            "s-post",
+            [Message(role="user", content="parent context")],
+        )
+        storage.save_messages(
+            "claude",
+            "s-post",
+            [Message(role="user", content="sub asked: cat the file")],
+            agent_id="a9",
+        )
+
+        await _proxy().handle_hook(
+            "PostToolUse",
+            json.dumps(
+                {
+                    "session_id": "s-post",
+                    "agent_id": "a9",
+                    "tool_use_id": "tu2",
+                    "tool_name": "Read",
+                    "tool_response": "subagent file contents",
+                }
+            ).encode(),
+        )
+
+        messages, _ = fake_ai_guard.calls[0]
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert user_msgs[0]["content"] == "sub asked: cat the file"
+        # Tool result appended onto the subagent's history, not the parent's.
+        assert messages[-1]["role"] == "tool"
+        assert messages[-1]["content"] == "subagent file contents"
 
 
 class TestHandleHookTags:

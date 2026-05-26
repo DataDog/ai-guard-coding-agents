@@ -53,9 +53,15 @@ class ProxyHandler(ABC):
         """Return True if this handler should process the given request."""
 
     @abstractmethod
-    def parse_request(self, request: aiohttp.web.Request, body: bytes) -> tuple[str, list[Message]]:
-        """Extract session_id and AI Guard messages from a request body. Return
-        ``("", [])`` for requests this handler doesn't want to persist."""
+    def parse_request(
+        self, request: aiohttp.web.Request, body: bytes
+    ) -> tuple[str, str, list[Message]]:
+        """Extract session_id, agent_id, and AI Guard messages from a request body.
+
+        ``agent_id`` is empty for the parent session and the subagent's
+        identifier for sidechain calls — storage keys per-slot so subagent and
+        main-session histories don't overwrite each other. Return
+        ``("", "", [])`` for requests this handler doesn't want to persist."""
 
     @abstractmethod
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes) -> list[Message]:
@@ -257,10 +263,11 @@ class Proxy:
         logger.debug("handler %s ready to handle %s %s", handler.agent(), request.method, path)
         req_messages = []
         session_id = ""
+        agent_id = ""
         try:
-            session_id, req_messages = handler.parse_request(request, req_body)
+            session_id, agent_id, req_messages = handler.parse_request(request, req_body)
             if session_id and req_messages:
-                save_messages(handler.agent(), session_id, req_messages)
+                save_messages(handler.agent(), session_id, req_messages, agent_id=agent_id)
         except Exception:
             logger.exception("failed to extract request messages")
 
@@ -283,11 +290,11 @@ class Proxy:
                 try:
                     resp_messages = handler.parse_response(upstream, b"".join(chunks))
                     if resp_messages:
-                        agent = handler.agent()
                         save_messages(
-                            agent,
+                            handler.agent(),
                             session_id,
                             req_messages + resp_messages,
+                            agent_id=agent_id,
                         )
                 except Exception:
                     logger.exception("failed to extract response messages", exc_info=True)
