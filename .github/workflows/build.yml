@@ -58,13 +58,19 @@ jobs:
         shell: pwsh
         run: git config --system core.longpaths true
 
+      # Pin a Python version so uv installs and manages its own interpreter
+      # rather than the runner's externally-managed system Python (PEP 668).
+      # Without this, `uv pip install --system` fails on ubuntu-24.04 and
+      # macos-latest images that ship a marked-externally-managed Python.
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2
+        with:
+          python-version: "3.13"
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[build]"
+        run: uv sync --extra build
 
       - name: Build executable
-        run: pyinstaller ai-guard.spec
+        run: uv run pyinstaller ai-guard.spec
 
       # PyInstaller's onedir output is ``dist/ai-guard/`` (launcher +
       # ``_internal/`` siblings). Rename the directory so the tarball's
