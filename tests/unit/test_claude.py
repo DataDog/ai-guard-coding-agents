@@ -18,7 +18,7 @@ Grouped into classes by what's being tested:
   * :class:`TestSSEResponseParser` — ``_parse_sse_body``.
   * :class:`TestHandleHookSpans` — span-emitting hooks (Session/Subagent).
   * :class:`TestHandleHookToolUse` — Pre/Post tool hooks.
-  * :class:`TestHandleHookTags` — user-id tagging (host/user).
+  * :class:`TestHandleHookTags` — user-id tagging (user@host).
   * :class:`TestHandleHookDispatch` — payload tolerance + camelCase dispatch.
 """
 
@@ -764,7 +764,7 @@ class TestHandleHookToolUse:
 
 
 class TestHandleHookTags:
-    """Span tagging picks up the ``host/user`` id from ``proxy.server.fetch_user_id``."""
+    """Span tagging picks up the ``user@host`` id from ``proxy.server.fetch_user_id``."""
 
     async def test_tags_user_id_from_fetch_user_id(
         self, tracer_recorder, fake_user_id: str, tmp_home: Path

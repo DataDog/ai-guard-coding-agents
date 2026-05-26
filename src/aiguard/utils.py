@@ -9,7 +9,7 @@
   poll loop. Used by the installer to confirm the proxy came up.
 * :func:`detect_executable` — :func:`shutil.which` wrapper returning a
   :class:`Path`. Used by agent installers to test whether a tool is on PATH.
-* :func:`fetch_user_id` — portable ``<hostname>/<os_user>`` identifier used
+* :func:`fetch_user_id` — portable ``<os_user>@<hostname>`` identifier used
   as the ``ai_guard.usr.id`` tag value across all coding-agent handlers.
 """
 
@@ -88,7 +88,7 @@ def detect_executable(name: str) -> Path | None:
 
 
 def fetch_user_id() -> str:
-    """Return ``<hostname>/<os_user>`` for the current process.
+    """Return ``<os_user>@<hostname>`` for the current process.
 
     Portable across Linux, macOS, and Windows: ``socket.gethostname`` works
     everywhere, and ``getpass.getuser`` consults ``LOGNAME``/``USER``/
@@ -105,4 +105,4 @@ def fetch_user_id() -> str:
     except Exception:
         logger.debug("fetch_user_id: getpass.getuser() failed", exc_info=True)
         user = "-"
-    return f"{hostname}/{user}"
+    return f"{user}@{hostname}"
