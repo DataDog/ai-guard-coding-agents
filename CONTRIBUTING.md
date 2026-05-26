@@ -97,22 +97,3 @@ How it works:
    three platform tarballs and attaches them (plus `.sha256` sidecars) to
    the Release. [`scripts/install.sh`](scripts/install.sh) downloads from
    the Release assets.
-
-Version bump table (pre-1.0):
-
-| Commit prefix                       | Bump  | Example         |
-| ----------------------------------- | ----- | --------------- |
-| `fix:` / `perf:`                    | patch | `0.1.0 → 0.1.1` |
-| `feat:`                             | minor | `0.1.0 → 0.2.0` |
-| `feat!:` / `BREAKING CHANGE:` body  | minor | `0.1.0 → 0.2.0` |
-| `chore:` / `docs:` / `ci:` / `test:`/ `refactor:` / `style:` | none  | no release      |
-
-Pre-1.0 behaviour comes from `bump-minor-pre-major: true`. Once the project
-is ready for `1.0.0`, cut it explicitly with a `Release-As: 1.0.0` trailer
-in any commit body and merge to `main`.
-
-Manual recovery: if `release-please` is broken, you can still cut a release
-by hand — `git tag v0.2.0 && git push origin v0.2.0`. The `v*` tag-push
-trigger in `build.yml` runs the build, auto-creates the GitHub Release
-with `gh release create --generate-notes` if one doesn't already exist,
-and attaches the platform tarballs.
