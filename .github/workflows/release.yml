@@ -23,27 +23,26 @@ jobs:
     name: Release please
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      id-token: write  # required for dd-octo-sts OIDC exchange
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      # Mint a short-lived installation token for the dedicated GitHub App
-      # (RELEASE_PLEASE_APP_ID / RELEASE_PLEASE_APP_PRIVATE_KEY). The
-      # default GITHUB_TOKEN can't be used here: GitHub does not trigger
-      # downstream workflows for events authored by GITHUB_TOKEN, so the
-      # release PR would land with no `pull_request` checks. A token
-      # minted from a GitHub App bypasses that safeguard.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
-        id: app-token
+      # Mint a short-lived token via Datadog's dd-octo-sts. The default
+      # GITHUB_TOKEN can't be used here: GitHub does not trigger downstream
+      # workflows for events authored by GITHUB_TOKEN, so the release PR
+      # would land with no `pull_request` checks. The policy lives at
+      # `.github/chainguard/self.github.release.main.sts.yaml`.
+      - uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a  # v1.0.4
+        id: octo-sts
         with:
-          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          scope: DataDog/ai-guard-coding-agents
+          policy: self.github.release.main
 
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.octo-sts.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
