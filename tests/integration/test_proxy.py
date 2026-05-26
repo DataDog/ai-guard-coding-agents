@@ -42,6 +42,13 @@ CLAUDE_UA = "claude-cli/1.2.3 (External, cli)"
 HOOK_UA = "ai-guard-cli/test"
 FIXTURE_SSE = Path(__file__).resolve().parents[1] / "fixtures" / "anthropic_sse_stream.txt"
 
+# Claude Code stamps the session/agent identifiers on every Anthropic call;
+# the proxy reads these to route storage to the right per-subagent slot.
+SESSION_HEADERS = {
+    "User-Agent": CLAUDE_UA,
+    "X-Claude-Code-Session-Id": "sess-abc",
+}
+
 
 # ── Passthrough + storage ─────────────────────────────────────────────────────
 
@@ -66,13 +73,13 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=anthropic_request_body,
-            headers={"User-Agent": CLAUDE_UA, "x-api-key": "sk-test"},
+            headers={**SESSION_HEADERS, "x-api-key": "sk-test"},
         ) as resp:
             assert resp.status == 200
             body = await resp.json()
             assert body["id"] == anthropic_response_body["id"]
 
-        # Session id is embedded in metadata.user_id JSON in the request body.
+        # Session id comes from the X-Claude-Code-Session-Id header.
         stored = storage.load_messages("claude", "sess-abc")
         roles = [m["role"] for m in stored]
         assert roles[0] == "system"
@@ -147,7 +154,7 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=anthropic_request_body,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ):
             pass
 
@@ -170,7 +177,7 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=turn2_body,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ):
             pass
 
@@ -191,47 +198,39 @@ class TestProxyPassthrough:
         """Main session and subagent share the Claude session_id but live in
         separate slot files — neither overwrites the other. This is the
         regression guard for the original "conversations mixed in the proxy"
-        bug: storage keyed only by session_id meant the last writer won."""
+        bug: storage keyed only by session_id meant the last writer won. The
+        proxy distinguishes them via the X-Claude-Code-Agent-Id header that
+        Claude Code stamps on sidechain traffic."""
 
         async def handler(request: aiohttp.web.Request) -> aiohttp.web.Response:
             return aiohttp.web.json_response(anthropic_response_body)
 
         client = await proxy_client(handler)
         session_id = "sess-shared"
+        main_headers = {
+            "User-Agent": CLAUDE_UA,
+            "X-Claude-Code-Session-Id": session_id,
+        }
+        sub_headers = {
+            **main_headers,
+            "X-Claude-Code-Agent-Id": "a14cb",
+        }
 
         main_body = {
             "model": "claude-sonnet-4-5",
-            "metadata": {
-                "user_id": json.dumps({"session_id": session_id, "account_uuid": "acct-1"})
-            },
             "messages": [{"role": "user", "content": "main: write a haiku"}],
         }
         sub_body = {
             "model": "claude-sonnet-4-5",
-            "metadata": {
-                "user_id": json.dumps(
-                    {
-                        "session_id": session_id,
-                        "account_uuid": "acct-1",
-                        "agent_id": "a14cb",
-                    }
-                )
-            },
             "messages": [{"role": "user", "content": "sub: list the project files"}],
         }
 
         # Interleave: subagent fires between two main-session turns.
-        async with client.post(
-            "/v1/messages", json=main_body, headers={"User-Agent": CLAUDE_UA}
-        ):
+        async with client.post("/v1/messages", json=main_body, headers=main_headers):
             pass
-        async with client.post(
-            "/v1/messages", json=sub_body, headers={"User-Agent": CLAUDE_UA}
-        ):
+        async with client.post("/v1/messages", json=sub_body, headers=sub_headers):
             pass
-        async with client.post(
-            "/v1/messages", json=main_body, headers={"User-Agent": CLAUDE_UA}
-        ):
+        async with client.post("/v1/messages", json=main_body, headers=main_headers):
             pass
 
         main_history = storage.load_messages("claude", session_id)
@@ -297,7 +296,7 @@ class TestProxyStreaming:
         async with client.post(
             "/v1/messages",
             json=streamed,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ) as resp:
             assert resp.status == 200
             assert await resp.read() == sse_body

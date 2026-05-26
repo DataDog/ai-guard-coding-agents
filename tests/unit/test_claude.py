@@ -94,8 +94,19 @@ class TestClaudeProxyMatches:
     """
 
     @staticmethod
-    def _req(method: str, path: str, ua: str = "claude-cli/1.2.3") -> Any:
+    def _req(
+        method: str,
+        path: str,
+        ua: str = "claude-cli/1.2.3",
+        *,
+        session_id: str = "",
+        agent_id: str = "",
+    ) -> Any:
         headers = {"User-Agent": ua, "Content-Type": "application/json"} if ua else {}
+        if session_id:
+            headers["X-Claude-Code-Session-Id"] = session_id
+        if agent_id:
+            headers["X-Claude-Code-Agent-Id"] = agent_id
         return make_mocked_request(method, path, headers=headers)
 
     def test_agent_name_is_claude(self) -> None:
@@ -136,26 +147,27 @@ class TestClaudeProxyMatches:
         sid, aid, msgs = proxy.parse_request(self._req("POST", "/v1/messages"), b"{not json")
         assert (sid, aid, msgs) == ("", "", [])
 
-    def test_parse_request_extracts_subagent_agent_id(self) -> None:
+    def test_parse_request_pulls_session_and_agent_id_from_headers(self) -> None:
         proxy = _proxy()
-        body = json.dumps(
-            {
-                "metadata": {
-                    "user_id": json.dumps(
-                        {
-                            "session_id": "sess-abc",
-                            "account_uuid": "acct-1",
-                            "agent_id": "a14cb3bf47e9a6e48",
-                        }
-                    )
-                },
-                "messages": [{"role": "user", "content": "hi"}],
-            }
-        ).encode()
-        sid, aid, msgs = proxy.parse_request(self._req("POST", "/v1/messages"), body)
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+        request = self._req(
+            "POST",
+            "/v1/messages",
+            session_id="sess-abc",
+            agent_id="a14cb3bf47e9a6e48",
+        )
+        sid, aid, msgs = proxy.parse_request(request, body)
         assert sid == "sess-abc"
         assert aid == "a14cb3bf47e9a6e48"
         assert msgs and msgs[0]["role"] == "user"
+
+    def test_parse_request_returns_empty_agent_id_for_main_session(self) -> None:
+        proxy = _proxy()
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+        request = self._req("POST", "/v1/messages", session_id="sess-abc")
+        sid, aid, _ = proxy.parse_request(request, body)
+        assert sid == "sess-abc"
+        assert aid == ""
 
 
 class TestBlockedTool:
@@ -444,63 +456,48 @@ class TestAnthropicMessageParser:
 
 
 class TestSessionKeysParser:
-    """``_fetch_session_keys`` extracts ``(session_id, agent_id)`` from
-    ``metadata.user_id``. Subagent calls share the parent's ``session_id`` but
-    add an ``agent_id`` so the proxy can route them to their own storage slot.
+    """``_fetch_session_keys`` extracts ``(session_id, agent_id)`` from the
+    Claude Code request headers. Subagent calls share the parent's session id
+    but add an ``X-Claude-Code-Agent-Id`` header so the proxy can route their
+    history to a per-agent storage slot.
     """
 
-    def test_from_user_id_json(self) -> None:
-        data = {
-            "metadata": {
-                "user_id": json.dumps({"session_id": "sess-abc", "account_uuid": "acct-1"})
-            }
-        }
-        assert _fetch_session_keys(data) == ("sess-abc", "")
+    @staticmethod
+    def _request(**headers: str) -> Any:
+        return make_mocked_request("POST", "/v1/messages", headers=headers)
+
+    def test_session_only_header(self) -> None:
+        req = self._request(**{"X-Claude-Code-Session-Id": "sess-abc"})
+        assert _fetch_session_keys(req) == ("sess-abc", "")
 
     def test_subagent_call_returns_session_and_agent_id(self) -> None:
-        data = {
-            "metadata": {
-                "user_id": json.dumps(
-                    {
-                        "session_id": "sess-abc",
-                        "account_uuid": "acct-1",
-                        "agent_id": "a14cb3bf47e9a6e48",
-                    }
-                )
+        req = self._request(
+            **{
+                "X-Claude-Code-Session-Id": "sess-abc",
+                "X-Claude-Code-Agent-Id": "a14cb3bf47e9a6e48",
             }
-        }
-        assert _fetch_session_keys(data) == ("sess-abc", "a14cb3bf47e9a6e48")
+        )
+        assert _fetch_session_keys(req) == ("sess-abc", "a14cb3bf47e9a6e48")
 
-    def test_returns_empty_when_metadata_missing(self) -> None:
-        assert _fetch_session_keys({}) == ("", "")
+    def test_returns_empty_when_no_headers(self) -> None:
+        req = self._request()
+        assert _fetch_session_keys(req) == ("", "")
 
-    def test_returns_empty_when_user_id_missing(self) -> None:
-        assert _fetch_session_keys({"metadata": {}}) == ("", "")
+    def test_returns_empty_when_only_agent_id_header_present(self) -> None:
+        """An agent_id without a session_id can't be routed; surface as empty."""
+        req = self._request(**{"X-Claude-Code-Agent-Id": "a7"})
+        sid, _ = _fetch_session_keys(req)
+        assert sid == ""
 
-    def test_returns_empty_when_user_id_blank(self) -> None:
-        assert _fetch_session_keys({"metadata": {"user_id": ""}}) == ("", "")
-
-    def test_returns_empty_when_user_id_not_json(self) -> None:
-        assert _fetch_session_keys({"metadata": {"user_id": "not-json"}}) == ("", "")
-
-    def test_returns_empty_when_user_id_not_an_object(self) -> None:
-        data = {"metadata": {"user_id": json.dumps(["not", "object"])}}
-        assert _fetch_session_keys(data) == ("", "")
-
-    def test_returns_empty_when_session_id_field_absent(self) -> None:
-        data = {"metadata": {"user_id": json.dumps({"account_uuid": "x"})}}
-        assert _fetch_session_keys(data) == ("", "")
-
-    def test_ignores_non_string_agent_id(self) -> None:
-        data = {
-            "metadata": {
-                "user_id": json.dumps({"session_id": "sess-abc", "agent_id": 7})
+    def test_header_lookup_is_case_insensitive(self) -> None:
+        """HTTP header names are case-insensitive — lowercase still works."""
+        req = self._request(
+            **{
+                "x-claude-code-session-id": "sess-abc",
+                "x-claude-code-agent-id": "a7",
             }
-        }
-        assert _fetch_session_keys(data) == ("sess-abc", "")
-
-    def test_tolerates_metadata_being_none(self) -> None:
-        assert _fetch_session_keys({"metadata": None}) == ("", "")
+        )
+        assert _fetch_session_keys(req) == ("sess-abc", "a7")
 
 
 class TestSSEResponseParser:

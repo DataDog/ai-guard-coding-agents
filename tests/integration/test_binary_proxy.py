@@ -194,19 +194,25 @@ def proxy_process(
             proc.wait(timeout=5)
 
 
-def _post_messages(port: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+def _post_messages(
+    port: int,
+    body: dict[str, Any],
+    *,
+    session_id: str = "",
+    agent_id: str = "",
+) -> tuple[int, dict[str, Any]]:
     payload = json.dumps(body).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "claude-cli/1.0.0 (External, cli)",
+    }
+    if session_id:
+        headers["X-Claude-Code-Session-Id"] = session_id
+    if agent_id:
+        headers["X-Claude-Code-Agent-Id"] = agent_id
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
     try:
-        conn.request(
-            "POST",
-            "/v1/messages",
-            payload,
-            {
-                "Content-Type": "application/json",
-                "User-Agent": "claude-cli/1.0.0 (External, cli)",
-            },
-        )
+        conn.request("POST", "/v1/messages", payload, headers)
         resp = conn.getresponse()
         data = resp.read()
         return resp.status, json.loads(data) if data else {}
@@ -230,15 +236,14 @@ def test_binary_passthrough_persists_messages(
     anthropic_mock: dict[str, Any],
 ) -> None:
     session_id = "binary-sess-1"
-    user_id_payload = json.dumps({"session_id": session_id, "account_uuid": "acct-1"})
 
     status, body = _post_messages(
         proxy_process["port"],
         {
             "model": "claude-sonnet-4-5",
-            "metadata": {"user_id": user_id_payload},
             "messages": [{"role": "user", "content": "hello"}],
         },
+        session_id=session_id,
     )
 
     assert status == 200
@@ -265,7 +270,7 @@ def test_binary_skips_storage_when_session_id_missing(
     proxy_process: dict[str, Any],
     anthropic_mock: dict[str, Any],
 ) -> None:
-    # No metadata.user_id → no session id → nothing to write.
+    # No X-Claude-Code-Session-Id header → no session id → nothing to write.
     status, _ = _post_messages(
         proxy_process["port"],
         {
