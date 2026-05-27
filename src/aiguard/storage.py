@@ -43,21 +43,36 @@ _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _MAIN_SLOT = "main"
 
 
+def _safe_resolve(*segments: str) -> Path | None:
+    """Resolve ``<root>/<segments...>`` and verify it lands exactly there.
+
+    ``relative_to(root)`` alone is insufficient: ``session_id=".."`` resolves
+    to the storage root and ``"../other"`` resolves to a sibling agent
+    directory — both pass that check and let ``delete_messages`` wipe data
+    outside the intended session. Comparing ``candidate.parts`` against the
+    expected tuple instead catches every segment that gets re-interpreted as a
+    traversal step, a separator, or an absolute path.
+    """
+    try:
+        root = state_dir().resolve(strict=False)
+        candidate = root.joinpath(*segments).resolve(strict=False)
+    except (OSError, ValueError):
+        return None
+    return candidate if candidate.parts == root.parts + segments else None
+
+
 def _session_file(agent: str, session_id: str, agent_id: str = "") -> Path | None:
     """Return the absolute path of a session slot's JSON file.
 
     Layout is ``<root>/<agent>/<session_id>/<slot>.json``, with ``slot`` set to
     the subagent ``agent_id`` for sidechain traffic and ``main`` for the
-    parent session. ``None`` if the resolved path would escape the storage
-    root (defense against path traversal via attacker-controlled
+    parent session. ``None`` if any segment would escape the expected location
+    (defense against path traversal via attacker-controlled
     ``agent``/``session_id``/``agent_id``).
     """
     slot = agent_id or _MAIN_SLOT
-    try:
-        root = state_dir().resolve(strict=False)
-        candidate = (root / agent / session_id / f"{slot}.json").resolve(strict=False)
-        candidate.relative_to(root)
-    except (OSError, ValueError):
+    candidate = _safe_resolve(agent, session_id, f"{slot}.json")
+    if candidate is None:
         logger.warning(
             "storage: rejecting agent/session_id/agent_id that escapes the storage root "
             "(agent=%r session_id=%r agent_id=%r)",
@@ -65,25 +80,20 @@ def _session_file(agent: str, session_id: str, agent_id: str = "") -> Path | Non
             session_id,
             agent_id,
         )
-        return None
     return candidate
 
 
 def _session_dir(agent: str, session_id: str) -> Path | None:
     """Return the directory holding every slot file for a session, or ``None``
-    if the resolved path would escape the storage root."""
-    try:
-        root = state_dir().resolve(strict=False)
-        candidate = (root / agent / session_id).resolve(strict=False)
-        candidate.relative_to(root)
-    except (OSError, ValueError):
+    if any segment would escape the expected location."""
+    candidate = _safe_resolve(agent, session_id)
+    if candidate is None:
         logger.warning(
             "storage: rejecting agent/session_id that escapes the storage root "
             "(agent=%r session_id=%r)",
             agent,
             session_id,
         )
-        return None
     return candidate
 
 

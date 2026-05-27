@@ -263,6 +263,32 @@ def test_delete_is_noop_when_path_escapes_root(tmp_home: Path) -> None:
     assert storage.load_messages("claude", "s") == [Message(role="user", content="x")]
 
 
+@pytest.mark.parametrize("session_id", ["..", ".", "../other", "./still-here"])
+def test_delete_rejects_session_id_that_resolves_inside_root(
+    tmp_home: Path, session_id: str
+) -> None:
+    """``..``/``../other`` resolve to paths inside the storage root, so a
+    relative_to-only check would let ``shutil.rmtree`` wipe the root or a
+    sibling agent directory. Both must be rejected."""
+    storage.save_messages("claude", "legit", [Message(role="user", content="x")])
+    storage.save_messages("other", "legit", [Message(role="user", content="y")])
+
+    storage.delete_messages("claude", session_id)
+
+    assert storage.load_messages("claude", "legit") == [Message(role="user", content="x")]
+    assert storage.load_messages("other", "legit") == [Message(role="user", content="y")]
+    assert paths.state_dir().is_dir()
+
+
+@pytest.mark.parametrize("agent_id", ["../poison", "with/slash", "/absolute"])
+def test_save_rejects_agent_id_that_escapes_slot(tmp_home: Path, agent_id: str) -> None:
+    """Slot name comes from ``agent_id`` and feeds ``f'{slot}.json'``; a
+    traversal-like value would otherwise write into a sibling directory."""
+    storage.save_messages("claude", "s", [Message(role="user", content="x")], agent_id=agent_id)
+    json_files = sorted(p.name for p in (paths.state_dir()).rglob("*.json"))
+    assert json_files == []
+
+
 # ── config.env round-trip ─────────────────────────────────────────────────────
 
 
