@@ -135,6 +135,52 @@ def staged_binary(tmp_home: Path) -> Path:
 
 
 # =============================================================================
+# aiguard/paths.py — Claude config-dir override (CLAUDE_CONFIG_DIR)
+# =============================================================================
+
+
+class TestClaudeConfigDir:
+    """``paths.claude_config_dir()`` honours ``$CLAUDE_CONFIG_DIR``.
+
+    Claude Code itself uses the same env var to relocate ``~/.claude/`` for
+    multi-account setups; the installer must follow so the hook block lands
+    next to the active account's ``settings.json``.
+    """
+
+    def test_default_is_dot_claude_under_home(self, tmp_home: Path) -> None:
+        assert paths.claude_config_dir() == tmp_home / ".claude"
+        assert paths.claude_settings_path() == tmp_home / ".claude" / "settings.json"
+
+    def test_env_var_overrides_default(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        override = tmp_home / "work-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+
+        assert paths.claude_config_dir() == override
+        assert paths.claude_settings_path() == override / "settings.json"
+
+    def test_env_var_expands_tilde(self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/personal-claude")
+        assert paths.claude_config_dir() == tmp_home / "personal-claude"
+
+    def test_install_writes_to_overridden_settings_path(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        override = tmp_home / "alt-claude"
+        override.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+
+        updated = ClaudeInstaller().install(PROXY)
+
+        assert updated == [override / "settings.json"]
+        data = _read(override / "settings.json")
+        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
+        # The default ~/.claude/settings.json must stay untouched.
+        assert not (tmp_home / ".claude" / "settings.json").exists()
+
+
+# =============================================================================
 # aiguard/claude/installer.py — drift guard + install/uninstall round-trip
 # =============================================================================
 

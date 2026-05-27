@@ -67,7 +67,9 @@ Every path the installer creates or modifies is listed below — nothing else on
 | `~/.claude/settings.json`                             | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`.     | `*`     | `Claude Code` |
 
 Paths follow the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) and honour
-`$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set.
+`$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set. The Claude Code rows above honour `$CLAUDE_CONFIG_DIR` — when set, the
+installer writes `settings.json` (and the proxy resolves user-level `skills/` and `plugins/`) under that directory
+instead of `~/.claude/`, matching Claude Code's own multi-account override.
 
 Service output is captured by the proxy's rotating logger at `~/.local/state/ai-guard/ai-guard.log`, including uncaught
 Python exceptions.

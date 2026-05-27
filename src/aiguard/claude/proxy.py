@@ -29,6 +29,7 @@ from ddtrace.appsec.ai_guard import (
 )
 from ddtrace.ext import user
 
+from aiguard import paths
 from aiguard import utils
 from aiguard.constants import AIGuardConstants
 from aiguard.proxy.server import ProxyHandler
@@ -651,11 +652,12 @@ def _find_skill_folder(cwd: str, skill: str) -> Path | None:
       1. Project-level: ``<cwd>/.claude/skills/<name>`` and the same path on
          every ancestor up to the filesystem root (so a skill installed at
          the repo root is found from a deeply nested ``cwd``).
-      2. User-level: ``~/.claude/skills/<name>``.
+      2. User-level: ``<claude_config_dir>/skills/<name>`` (``~/.claude`` by
+         default, or ``$CLAUDE_CONFIG_DIR`` when set).
       3. Plugin-scoped (when the ``"plugin:"`` prefix is present): any
-         ``~/.claude/plugins/**/skills/<name>`` whose path contains the plugin
-         segment.
-      4. Fallback: any ``~/.claude/plugins/**/skills/<name>``.
+         ``<claude_config_dir>/plugins/**/skills/<name>`` whose path contains
+         the plugin segment.
+      4. Fallback: any ``<claude_config_dir>/plugins/**/skills/<name>``.
 
     Returns the first existing folder containing ``SKILL.md``, or ``None``.
     """
@@ -695,11 +697,11 @@ def _find_skill_folder(cwd: str, skill: str) -> Path | None:
             logger.debug("find_skill: invalid cwd %r", cwd)
 
     # 2. User-level skills directory.
-    home = Path.home()
-    _add(home / ".claude" / "skills", name)
+    claude_home = paths.claude_config_dir()
+    _add(claude_home / "skills", name)
 
     # 3 & 4. Plugin marketplaces — plugin-scoped first, then any.
-    plugins_root = home / ".claude" / "plugins"
+    plugins_root = claude_home / "plugins"
     if plugins_root.is_dir():
         try:
             skills_dirs = [d for d in plugins_root.rglob("skills") if d.is_dir()]

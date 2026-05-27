@@ -37,15 +37,16 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect Path.home() and HOME/USERPROFILE to a tmp dir.
 
-    Also clears DD_AI_GUARD_HOME plus XDG_CONFIG_HOME/XDG_STATE_HOME so the
-    XDG-derived defaults in ``aiguard.paths`` resolve under the tmp home and
-    don't bleed into anything the host has exported.
+    Also clears DD_AI_GUARD_HOME, XDG_CONFIG_HOME/XDG_STATE_HOME, and
+    CLAUDE_CONFIG_DIR so the path helpers in ``aiguard.paths`` resolve under
+    the tmp home and don't bleed into anything the host has exported.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("DD_AI_GUARD_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     return tmp_path
 
