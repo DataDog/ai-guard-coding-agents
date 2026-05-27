@@ -213,8 +213,7 @@ def _detect_agents(selected: tuple[str, ...]) -> list[AgentInstaller]:
 
     With no ``--agent`` flag we consider every supported agent; otherwise we
     keep only the ones whose ``name`` the user asked for (unknown names are a
-    hard error so typos don't silently install nothing). Either way, an agent
-    must report itself as present via ``detect()`` to make the cut.
+    hard error so typos don't silently install nothing).
     """
     if selected:
         unknown = sorted(set(selected) - {a.name for a in SUPPORTED_AGENTS})
@@ -223,7 +222,7 @@ def _detect_agents(selected: tuple[str, ...]) -> list[AgentInstaller]:
         candidates = [a for a in SUPPORTED_AGENTS if a.name in selected]
     else:
         candidates = list(SUPPORTED_AGENTS)
-    return [a for a in candidates if a.detect()]
+    return candidates
 
 
 def _path_warning(c: Console) -> None:
@@ -311,16 +310,22 @@ def install(
 
     # ── Detect ────────────────────────────────────────────────────────────────
     ui.section(c, "Detect coding agents")
-    agents = _detect_agents(agents_selected)
-    if not agents:
+    candidates = _detect_agents(agents_selected)
+    agents = []
+    if not candidates:
         looked_for = ", ".join(sorted(a.name for a in SUPPORTED_AGENTS))
         ui.err(c, f"no supported coding agents detected (looked for: {looked_for})")
         sys.exit(1)
-    for agent in agents:
-        if agent.detect():
-            ui.ok(c, Text(agent.name, style="bold"))
+    for agent in candidates:
+        supported, message = agent.detect()
+        label = Text(agent.name, style="bold")
+        if supported:
+            ui.ok(c, label)
+            agents.append(agent)
         else:
-            ui.warn(c, Text(agent.name, style="bold"))
+            ui.warn(c, label)
+        if message:
+            ui.detail(c, message)
 
     # ── Configure ─────────────────────────────────────────────────────────────
     ui.section(c, "Configure")
@@ -437,7 +442,7 @@ def uninstall(yes: bool, no_color: bool) -> None:
     ui.section(c, "Restored")
     agent_updates: dict[str, list[Path]] = {}
     for agent in SUPPORTED_AGENTS:
-        if not agent.detect():
+        if not agent.detect()[0]:
             continue
         try:
             updated = agent.uninstall()

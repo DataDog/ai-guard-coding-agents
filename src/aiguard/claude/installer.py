@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
+
+from semantic_version import Version
 
 from aiguard import paths, storage
 from aiguard.constants import AIGuardConstants
@@ -59,9 +62,21 @@ def _is_ai_guard_entry(entry: dict) -> bool:
 class ClaudeInstaller(AgentInstaller):
     name = "Claude Code"
 
-    def detect(self) -> bool:
-        settings_path = paths.claude_settings_path()
-        return settings_path.exists() or detect_executable("claude") is not None
+    def detect(self) -> tuple[bool, str]:
+        executable = detect_executable("claude")
+        if not executable:
+            return False, "Claude not found"
+
+        version = self._claude_version(executable)
+        if version:
+            min_version = Version(AIGuardConstants.CLAUDE_MIN_VERSION)
+            if version < min_version:
+                return (
+                    False,
+                    f"Claude {version} is too old (need >= {min_version})",
+                )
+
+        return True, f"Claude found at {executable} v{version}"
 
     def env_fields(self) -> list[Field]:
         return [
@@ -150,3 +165,24 @@ class ClaudeInstaller(AgentInstaller):
             return None
         existing = (data.get("env") or {}).get("ANTHROPIC_BASE_URL")
         return existing or os.getenv("ANTHROPIC_BASE_URL")
+
+    @staticmethod
+    def _claude_version(executable: Path) -> Version | None:
+        try:
+            result = subprocess.run(
+                [str(executable), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # ``claude --version`` prints ``"<version> (Claude Code)"``; the first
+        # whitespace-separated token is what we feed to ``Version``.
+        token = (result.stdout or result.stderr).strip().split(maxsplit=1)
+        if not token:
+            return None
+        try:
+            return Version(token[0])
+        except ValueError:
+            return None

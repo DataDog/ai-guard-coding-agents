@@ -89,7 +89,26 @@ def wait_ready_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def claude_present(tmp_home: Path) -> Path:
+def claude_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend ``claude`` is on PATH at a version the installer accepts.
+
+    Tests that exercise the install/uninstall flow rely on
+    :meth:`ClaudeInstaller.detect` returning ``(True, ...)``, which in turn
+    shells out to ``claude --version``. We short-circuit both the lookup and
+    the version probe so the suite is hermetic.
+    """
+    from semantic_version import Version
+
+    monkeypatch.setattr(
+        "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+    )
+    monkeypatch.setattr(
+        ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("9.9.9"))
+    )
+
+
+@pytest.fixture
+def claude_present(tmp_home: Path, claude_detected: None) -> Path:
     settings = tmp_home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text("{}")
@@ -270,16 +289,55 @@ class TestClaudeInstaller:
     def test_detect_finds_executable_on_path(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from semantic_version import Version
+
         monkeypatch.setattr(
             "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
         )
-        assert ClaudeInstaller().detect() is True
+        monkeypatch.setattr(
+            ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("9.9.9"))
+        )
+        supported, message = ClaudeInstaller().detect()
+        assert supported is True
+        assert "9.9.9" in message
+        assert "/usr/bin/claude" in message
 
     def test_detect_missing_dir_returns_false(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
-        assert ClaudeInstaller().detect() is False
+        supported, message = ClaudeInstaller().detect()
+        assert supported is False
+        assert message == "Claude not found"
+
+    def test_detect_rejects_old_version(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from semantic_version import Version
+
+        monkeypatch.setattr(
+            "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+        )
+        monkeypatch.setattr(
+            ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("2.0.0"))
+        )
+        supported, message = ClaudeInstaller().detect()
+        assert supported is False
+        assert "too old" in message
+        assert "2.0.0" in message
+
+    def test_detect_accepts_when_version_unknown(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If we can't parse a version, fall open: the binary is on PATH so
+        we report Claude as detected and let the user proceed."""
+        monkeypatch.setattr(
+            "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+        )
+        monkeypatch.setattr(ClaudeInstaller, "_claude_version", staticmethod(lambda _: None))
+        supported, message = ClaudeInstaller().detect()
+        assert supported is True
+        assert "/usr/bin/claude" in message
 
 
 # =============================================================================
@@ -775,6 +833,7 @@ class TestCli:
         stub_platform: None,
         wait_ready_ok: None,
         staged_binary: Path,
+        claude_detected: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         settings = tmp_home / ".claude" / "settings.json"
@@ -899,6 +958,7 @@ class TestCli:
         stub_platform: None,
         wait_ready_ok: None,
         staged_binary: Path,
+        claude_detected: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After re-install, config.env must still hold the user's original upstream.
@@ -1037,8 +1097,10 @@ class FakeAgent(AgentInstaller):
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    def detect(self) -> bool:
-        return self._settings_path.parent.exists()
+    def detect(self) -> tuple[bool, str]:
+        if self._settings_path.parent.exists():
+            return True, f"fake agent at {self._settings_path.parent}"
+        return False, "fake agent not found"
 
     def env_fields(self) -> list[Field]:
         # FakeAgent demonstrates a non-Anthropic agent contributing its own

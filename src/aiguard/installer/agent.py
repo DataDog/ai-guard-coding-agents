@@ -33,8 +33,14 @@ class AgentInstaller(ABC):
     name: str
 
     @abstractmethod
-    def detect(self) -> bool:
-        """Return True if the agent looks installed, else False."""
+    def detect(self) -> tuple[bool, str]:
+        """Return ``(supported, message)``.
+
+        ``supported`` is True if the agent is installed and on a version we can
+        wire up. ``message`` is a short human-readable explanation the UI shows
+        next to the agent name (e.g. install path, missing-binary hint, or
+        version-too-old warning).
+        """
 
     @abstractmethod
     def install(self, proxy_url: str) -> list[Path]:
