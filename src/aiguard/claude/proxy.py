@@ -29,8 +29,7 @@ from ddtrace.appsec.ai_guard import (
 )
 from ddtrace.ext import user
 
-from aiguard import paths
-from aiguard import utils
+from aiguard import paths, utils
 from aiguard.constants import AIGuardConstants
 from aiguard.proxy.server import ProxyHandler
 from aiguard.proxy.util import parse_sse

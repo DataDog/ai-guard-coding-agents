@@ -17,7 +17,7 @@ from semantic_version import Version
 
 from aiguard import paths, storage
 from aiguard.constants import AIGuardConstants
-from aiguard.installer.agent import AgentInstaller, Field
+from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.utils import atomic_write, detect_executable
 
 HOOK_EVENTS: tuple[str, ...] = (
@@ -125,7 +125,15 @@ class ClaudeInstaller(AgentInstaller):
                 "DD_AI_GUARD_ANTHROPIC_UPSTREAM",
                 "Upstream Anthropic endpoint",
                 default=self._detect_upstream() or AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT,
-                tier=2,
+                tier=Tier.ADVANCED,
+            ),
+            # Persisted so the proxy service inherits the override on every
+            # restart.
+            Field(
+                "CLAUDE_CONFIG_DIR",
+                "Claude config directory override",
+                default=None,
+                tier=Tier.PASSTHROUGH,
             ),
         ]
 
