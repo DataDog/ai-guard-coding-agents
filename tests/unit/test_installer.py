@@ -286,6 +286,37 @@ class TestClaudeInstaller:
         assert "env" not in data
         assert "hooks" not in data
 
+    def test_is_installed_true_when_hooks_reference_ai_guard(self, tmp_home: Path) -> None:
+        _make_claude_dir(tmp_home)
+        ClaudeInstaller().install(PROXY)
+
+        assert ClaudeInstaller().is_installed() is True
+
+    def test_is_installed_false_on_pristine_settings(self, tmp_home: Path) -> None:
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Bash"]},
+                    "env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"},
+                }
+            )
+        )
+
+        assert ClaudeInstaller().is_installed() is False
+
+    def test_is_installed_true_when_only_proxy_env_remains(self, tmp_home: Path) -> None:
+        """User-edited settings can leave ``env.ANTHROPIC_BASE_URL`` pointing
+        at the proxy while the hook block was manually deleted. ``is_installed``
+        must still report True so the top-level uninstall driver runs
+        ``ClaudeInstaller.uninstall`` and restores or drops the env entry —
+        otherwise we'd delete the binary while Claude kept routing API traffic
+        at the now-dead local proxy."""
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
+
+        assert ClaudeInstaller().is_installed() is True
+
     def test_detect_finds_executable_on_path(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -330,7 +361,8 @@ class TestClaudeInstaller:
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If we can't parse a version, fall open: the binary is on PATH so
-        we report Claude as detected and let the user proceed."""
+        we report Claude as detected and let the user proceed. The message
+        must not interpolate ``None`` into a fake version suffix."""
         monkeypatch.setattr(
             "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
         )
@@ -338,6 +370,7 @@ class TestClaudeInstaller:
         supported, message = ClaudeInstaller().detect()
         assert supported is True
         assert "/usr/bin/claude" in message
+        assert "None" not in message
 
 
 # =============================================================================

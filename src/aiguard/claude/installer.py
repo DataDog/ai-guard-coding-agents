@@ -59,6 +59,19 @@ def _is_ai_guard_entry(entry: dict) -> bool:
     return False
 
 
+def _configured_proxy_url() -> str:
+    """The proxy URL the installer would currently write into agent settings.
+
+    Reads ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from
+    ``config.env`` (falling back to the constants), so callers can compare
+    against ``env.ANTHROPIC_BASE_URL`` to decide whether an entry is ours.
+    """
+    config = storage.load_config()
+    host = config.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = config.get("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
+    return f"http://{host}:{port}"
+
+
 class ClaudeInstaller(AgentInstaller):
     name = "Claude Code"
 
@@ -76,7 +89,8 @@ class ClaudeInstaller(AgentInstaller):
                     f"Claude {version} is too old (need >= {min_version})",
                 )
 
-        return True, f"Claude found at {executable} v{version}"
+        version_str = f" v{version}" if version else ""
+        return True, f"Claude found at {executable}{version_str}"
 
     def is_installed(self) -> bool:
         settings_path = paths.claude_settings_path()
@@ -86,15 +100,24 @@ class ClaudeInstaller(AgentInstaller):
             data = self._load()
         except RuntimeError:
             return False
+
+        # Check if there is any installed hook
         hooks = data.get("hooks")
-        if not isinstance(hooks, dict):
-            return False
-        return any(
+        if isinstance(hooks, dict) and any(
             isinstance(entry, dict) and _is_ai_guard_entry(entry)
             for entries in hooks.values()
             if isinstance(entries, list)
             for entry in entries
-        )
+        ):
+            return True
+
+        # Check the proxy base url
+        env_block = data.get("env")
+        if isinstance(env_block, dict):
+            base_url = env_block.get("ANTHROPIC_BASE_URL")
+            if isinstance(base_url, str) and base_url == _configured_proxy_url():
+                return True
+        return False
 
     def env_fields(self) -> list[Field]:
         return [

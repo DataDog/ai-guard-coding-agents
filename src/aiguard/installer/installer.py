@@ -318,10 +318,6 @@ def install(
     ui.section(c, "Detect coding agents")
     candidates = _detect_agents(agents_selected)
     agents = []
-    if not candidates:
-        looked_for = ", ".join(sorted(a.name for a in SUPPORTED_AGENTS))
-        ui.err(c, f"no supported coding agents detected (looked for: {looked_for})")
-        sys.exit(1)
     for agent in candidates:
         supported, message = agent.detect()
         label = Text(agent.name, style="bold")
