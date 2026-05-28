@@ -971,6 +971,7 @@ class TestCli:
         tmp_home: Path,
         stub_platform: None,
         wait_ready_ok: None,
+        claude_detected: None,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -983,8 +984,9 @@ class TestCli:
         """
         override = tmp_home / "alt-claude"
         override.mkdir()
-        # Stage settings.json under the override so ClaudeInstaller.detect()
-        # treats Claude as installed.
+        # Stage settings.json under the override so the installer has a file to
+        # merge hooks into; ``claude_detected`` already short-circuits the
+        # binary lookup and version probe.
         (override / "settings.json").write_text("{}")
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
         monkeypatch.setenv("DD_API_KEY", "k")
