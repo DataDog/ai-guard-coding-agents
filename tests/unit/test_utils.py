@@ -149,15 +149,15 @@ class TestWaitReady:
 
 
 # =============================================================================
-# fetch_user_id — portable <os_user>@<hostname>
+# fetch_endpoint_id — portable <os_user>@<hostname>
 # =============================================================================
 
 
-class TestFetchUserId:
+class TestFetchEndpointId:
     def test_composes_user_and_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(utils.socket, "gethostname", lambda: "my-laptop")
         monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
-        assert utils.fetch_user_id() == "alice@my-laptop"
+        assert utils.fetch_endpoint_id() == "alice@my-laptop"
 
     def test_falls_back_when_hostname_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise() -> str:
@@ -165,7 +165,7 @@ class TestFetchUserId:
 
         monkeypatch.setattr(utils.socket, "gethostname", _raise)
         monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
-        assert utils.fetch_user_id() == "alice@-"
+        assert utils.fetch_endpoint_id() == "alice@-"
 
     def test_falls_back_when_user_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise() -> str:
@@ -173,9 +173,9 @@ class TestFetchUserId:
 
         monkeypatch.setattr(utils.socket, "gethostname", lambda: "my-laptop")
         monkeypatch.setattr(utils.getpass, "getuser", _raise)
-        assert utils.fetch_user_id() == "-@my-laptop"
+        assert utils.fetch_endpoint_id() == "-@my-laptop"
 
     def test_falls_back_when_hostname_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(utils.socket, "gethostname", lambda: "")
         monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
-        assert utils.fetch_user_id() == "alice@-"
+        assert utils.fetch_endpoint_id() == "alice@-"

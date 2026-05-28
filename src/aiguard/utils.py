@@ -9,8 +9,8 @@
   poll loop. Used by the installer to confirm the proxy came up.
 * :func:`detect_executable` — :func:`shutil.which` wrapper returning a
   :class:`Path`. Used by agent installers to test whether a tool is on PATH.
-* :func:`fetch_user_id` — portable ``<os_user>@<hostname>`` identifier used
-  as the ``ai_guard.usr.id`` tag value across all coding-agent handlers.
+* :func:`fetch_endpoint_id` — portable ``<os_user>@<hostname>`` identifier
+  used as the ``ai_guard.usr.id`` tag value across all coding-agent handlers.
 """
 
 from __future__ import annotations
@@ -87,22 +87,24 @@ def detect_executable(name: str) -> Path | None:
     return Path(found) if found else None
 
 
-def fetch_user_id() -> str:
-    """Return ``<os_user>@<hostname>`` for the current process.
-
-    Portable across Linux, macOS, and Windows: ``socket.gethostname`` works
-    everywhere, and ``getpass.getuser`` consults ``LOGNAME``/``USER``/
-    ``LNAME``/``USERNAME`` before falling back to ``pwd`` on POSIX. Either
-    part falls back to ``"-"`` if it can't be determined.
-    """
+def fetch_hostname() -> str | None:
     try:
-        hostname = socket.gethostname() or "-"
+        return socket.gethostname()
     except OSError:
-        logger.debug("fetch_user_id: socket.gethostname() failed", exc_info=True)
-        hostname = "-"
+        logger.debug("fetch_endpoint_id: socket.gethostname() failed", exc_info=True)
+        return None
+
+
+def fetch_user() -> str | None:
     try:
-        user = getpass.getuser() or "-"
+        return getpass.getuser()
     except Exception:
-        logger.debug("fetch_user_id: getpass.getuser() failed", exc_info=True)
-        user = "-"
+        logger.debug("fetch_endpoint_id: getpass.getuser() failed", exc_info=True)
+        return None
+
+
+def fetch_endpoint_id() -> str:
+    """Return ``<os_user>@<hostname>`` for the current process."""
+    hostname = fetch_hostname() or "-"
+    user = fetch_user() or "-"
     return f"{user}@{hostname}"

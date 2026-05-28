@@ -51,10 +51,10 @@ def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def fake_user_id(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Pin ``aiguard.utils.fetch_user_id`` to a deterministic ``user@host`` value."""
+def fake_endpoint_id(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Pin ``aiguard.utils.fetch_endpoint_id`` to a deterministic ``user@host`` value."""
     value = "test-user@test-host"
-    monkeypatch.setattr(utils, "fetch_user_id", lambda: value)
+    monkeypatch.setattr(utils, "fetch_endpoint_id", lambda: value)
     return value
 
 

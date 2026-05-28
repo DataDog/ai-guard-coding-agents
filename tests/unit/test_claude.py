@@ -764,13 +764,13 @@ class TestHandleHookToolUse:
 
 
 class TestHandleHookTags:
-    """Span tagging picks up the ``user@host`` id from ``proxy.server.fetch_user_id``."""
+    """Span tagging picks up the ``user@host`` id from ``utils.fetch_endpoint_id``."""
 
-    async def test_tags_user_id_from_fetch_user_id(
-        self, tracer_recorder, fake_user_id: str, tmp_home: Path
+    async def test_tags_user_id_from_fetch_endpoint_id(
+        self, tracer_recorder, fake_endpoint_id: str, tmp_home: Path
     ) -> None:
         await _proxy().handle_hook("SessionStart", json.dumps({"session_id": "s1"}).encode())
-        assert tracer_recorder.spans[0].tags[AIGuardConstants.USER_ID_TAG] == fake_user_id
+        assert tracer_recorder.spans[0].tags[AIGuardConstants.USER_ID_TAG] == fake_endpoint_id
 
 
 class TestHandleHookDispatch:
