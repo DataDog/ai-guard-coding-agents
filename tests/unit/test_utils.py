@@ -1,6 +1,6 @@
 """Unit tests for src/aiguard/utils.py.
 
-Three small surfaces share this module:
+Four small surfaces share this module:
 
 * :class:`TestAtomicWrite`   — tempfile + ``os.replace`` so readers never see a
   partial file; optional mode locks the file down for secrets.
@@ -9,6 +9,8 @@ Three small surfaces share this module:
   branches on either host OS.
 * :class:`TestWaitReady`     — pure-stdlib ``nc -z`` equivalent used by the
   installer to confirm the proxy is listening before it claims success.
+* :class:`TestFetchUserId`   — portable ``<hostname>/<os_user>`` identifier
+  used as the ``ai_guard.usr.id`` tag value.
 """
 
 from __future__ import annotations
@@ -144,3 +146,36 @@ class TestWaitReady:
         start = time.monotonic()
         assert not utils.wait_ready("127.0.0.1", port, timeout=0.3, interval=0.05)
         assert time.monotonic() - start < 1.0
+
+
+# =============================================================================
+# fetch_endpoint_id — portable <os_user>@<hostname>
+# =============================================================================
+
+
+class TestFetchEndpointId:
+    def test_composes_user_and_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(utils.socket, "gethostname", lambda: "my-laptop")
+        monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
+        assert utils.fetch_endpoint_id() == "alice@my-laptop"
+
+    def test_falls_back_when_hostname_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise() -> str:
+            raise OSError("no host")
+
+        monkeypatch.setattr(utils.socket, "gethostname", _raise)
+        monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
+        assert utils.fetch_endpoint_id() == "alice@-"
+
+    def test_falls_back_when_user_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise() -> str:
+            raise OSError("no user")
+
+        monkeypatch.setattr(utils.socket, "gethostname", lambda: "my-laptop")
+        monkeypatch.setattr(utils.getpass, "getuser", _raise)
+        assert utils.fetch_endpoint_id() == "-@my-laptop"
+
+    def test_falls_back_when_hostname_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(utils.socket, "gethostname", lambda: "")
+        monkeypatch.setattr(utils.getpass, "getuser", lambda: "alice")
+        assert utils.fetch_endpoint_id() == "alice@-"
