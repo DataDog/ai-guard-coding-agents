@@ -332,6 +332,9 @@ def install(
             ui.warn(c, label)
         if message:
             ui.detail(c, message)
+    if not agents:
+        ui.err(c, "no supported coding agents available — address the warnings above and re-run")
+        sys.exit(1)
 
     # ── Configure ─────────────────────────────────────────────────────────────
     ui.section(c, "Configure")
@@ -448,7 +451,12 @@ def uninstall(yes: bool, no_color: bool) -> None:
     ui.section(c, "Restored")
     agent_updates: dict[str, list[Path]] = {}
     for agent in SUPPORTED_AGENTS:
-        if not agent.detect()[0]:
+        # Drive rollback off "settings still reference ai-guard", not
+        # "the agent is supported": a user who downgraded Claude below the
+        # min version (or removed it) after install must still get a clean
+        # uninstall — otherwise the stale hook block in settings.json keeps
+        # pointing at a binary we then delete below.
+        if not agent.is_installed():
             continue
         try:
             updated = agent.uninstall()

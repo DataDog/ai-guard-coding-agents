@@ -853,6 +853,61 @@ class TestCli:
         assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" in env_content
         assert "https://upstream.example/v1" in env_content
 
+    def test_uninstall_cleans_hooks_when_agent_no_longer_supported(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Once hooks are wired into settings.json, uninstall must roll them
+        back even if the agent itself has been removed or downgraded below the
+        supported version between install and uninstall — otherwise the
+        binary at ~/.local/bin/ai-guard gets deleted while settings.json keeps
+        a dead hook block pointing at it."""
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        inst = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert inst.exit_code == 0, inst.output + str(inst.exception or "")
+        assert json.loads(claude_present.read_text()).get("hooks")
+
+        # Simulate "claude was removed (or downgraded below the min version)
+        # after install" — detect() now returns (False, ...) but the hooks
+        # block in settings.json still points at ai-guard.
+        monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
+
+        uninst = CliRunner().invoke(uninstall, ["--yes", "--no-color"])
+        assert uninst.exit_code == 0, uninst.output + str(uninst.exception or "")
+
+        data = json.loads(claude_present.read_text())
+        assert not data.get("hooks")
+
+    def test_install_aborts_when_no_agents_pass_detection(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Detection that turns up only unsupported agents must abort rather
+        than producing a "successful" install with no hooks wired (Claude
+        below ``CLAUDE_MIN_VERSION`` is the practical trigger now that the
+        version gate lives in ``ClaudeInstaller.detect``)."""
+        monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+
+        assert result.exit_code != 0
+        # No side effects past detection: config + service must not exist.
+        assert not paths.config_env_path().exists()
+        assert not paths.systemd_unit_path().exists()
+
     def test_uninstall_leaves_only_app_log(
         self,
         tmp_home: Path,
@@ -1101,6 +1156,14 @@ class FakeAgent(AgentInstaller):
         if self._settings_path.parent.exists():
             return True, f"fake agent at {self._settings_path.parent}"
         return False, "fake agent not found"
+
+    def is_installed(self) -> bool:
+        if not self._settings_path.exists():
+            return False
+        return any(
+            h.get("command", "").startswith("ai-guard hook")
+            for h in self._load().get("hooks") or []
+        )
 
     def env_fields(self) -> list[Field]:
         # FakeAgent demonstrates a non-Anthropic agent contributing its own

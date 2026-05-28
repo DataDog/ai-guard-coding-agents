@@ -78,6 +78,24 @@ class ClaudeInstaller(AgentInstaller):
 
         return True, f"Claude found at {executable} v{version}"
 
+    def is_installed(self) -> bool:
+        settings_path = paths.claude_settings_path()
+        if not settings_path.exists():
+            return False
+        try:
+            data = self._load()
+        except RuntimeError:
+            return False
+        hooks = data.get("hooks")
+        if not isinstance(hooks, dict):
+            return False
+        return any(
+            isinstance(entry, dict) and _is_ai_guard_entry(entry)
+            for entries in hooks.values()
+            if isinstance(entries, list)
+            for entry in entries
+        )
+
     def env_fields(self) -> list[Field]:
         return [
             Field(
