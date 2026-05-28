@@ -94,7 +94,7 @@ ENV HOME=/home/claude \
 ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ── Claude Code CLI ───────────────────────────────────────────────────────────
-RUN npm install -g @anthropic-ai/claude-code@2.1.121
+RUN npm install -g @anthropic-ai/claude-code@2.1.139
 
 # ── Working directory for interactive sessions ────────────────────────────────
 WORKDIR /home/claude
