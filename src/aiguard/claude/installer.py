@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
+
+from semantic_version import Version
 
 from aiguard import paths, storage
 from aiguard.constants import AIGuardConstants
@@ -56,12 +59,65 @@ def _is_ai_guard_entry(entry: dict) -> bool:
     return False
 
 
+def _configured_proxy_url() -> str:
+    """The proxy URL the installer would currently write into agent settings.
+
+    Reads ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from
+    ``config.env`` (falling back to the constants), so callers can compare
+    against ``env.ANTHROPIC_BASE_URL`` to decide whether an entry is ours.
+    """
+    config = storage.load_config()
+    host = config.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = config.get("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
+    return f"http://{host}:{port}"
+
+
 class ClaudeInstaller(AgentInstaller):
     name = "Claude Code"
 
-    def detect(self) -> bool:
+    def detect(self) -> tuple[bool, str]:
+        executable = detect_executable("claude")
+        if not executable:
+            return False, "Claude not found"
+
+        version = self._claude_version(executable)
+        if version:
+            min_version = Version(AIGuardConstants.CLAUDE_MIN_VERSION)
+            if version < min_version:
+                return (
+                    False,
+                    f"Claude {version} is too old (need >= {min_version})",
+                )
+
+        version_str = f" v{version}" if version else ""
+        return True, f"Claude found at {executable}{version_str}"
+
+    def is_installed(self) -> bool:
         settings_path = paths.claude_settings_path()
-        return settings_path.exists() or detect_executable("claude") is not None
+        if not settings_path.exists():
+            return False
+        try:
+            data = self._load()
+        except RuntimeError:
+            return False
+
+        # Check if there is any installed hook
+        hooks = data.get("hooks")
+        if isinstance(hooks, dict) and any(
+            isinstance(entry, dict) and _is_ai_guard_entry(entry)
+            for entries in hooks.values()
+            if isinstance(entries, list)
+            for entry in entries
+        ):
+            return True
+
+        # Check the proxy base url
+        env_block = data.get("env")
+        if isinstance(env_block, dict):
+            base_url = env_block.get("ANTHROPIC_BASE_URL")
+            if isinstance(base_url, str) and base_url == _configured_proxy_url():
+                return True
+        return False
 
     def env_fields(self) -> list[Field]:
         return [
@@ -150,3 +206,24 @@ class ClaudeInstaller(AgentInstaller):
             return None
         existing = (data.get("env") or {}).get("ANTHROPIC_BASE_URL")
         return existing or os.getenv("ANTHROPIC_BASE_URL")
+
+    @staticmethod
+    def _claude_version(executable: Path) -> Version | None:
+        try:
+            result = subprocess.run(
+                [str(executable), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        # ``claude --version`` prints ``"<version> (Claude Code)"``; the first
+        # whitespace-separated token is what we feed to ``Version``.
+        token = (result.stdout or result.stderr).strip().split(maxsplit=1)
+        if not token:
+            return None
+        try:
+            return Version(token[0])
+        except ValueError:
+            return None

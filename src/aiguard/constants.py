@@ -27,6 +27,7 @@ class AIGuardConstants(object):
 
     # CODING AGENTS
     CLAUDE_CODE = "claude_code"
+    CLAUDE_MIN_VERSION = "2.1.139"
 
     # Installer services
     LAUNCHD_LABEL = "com.datadoghq.ai-guard"

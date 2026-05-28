@@ -60,19 +60,22 @@ class ClaudeProxy(ProxyHandler):
         user_agent = request.headers.get("User-Agent", "")
         return "claude-cli" in user_agent
 
-    def parse_request(self, request: aiohttp.web.Request, body: bytes) -> tuple[str, list[Message]]:
+    def parse_request(
+        self, request: aiohttp.web.Request, body: bytes
+    ) -> tuple[str, str, list[Message]]:
         if (
             request.method.upper() != "POST"
             or request.path.split("?")[0] != "/v1/messages"
             or "application/json" not in request.content_type.lower()
         ):
-            return "", []
+            return "", "", []
+        session_id, agent_id = _fetch_session_keys(request)
         try:
             data = json.loads(body)
         except (json.JSONDecodeError, ValueError):
             logger.error("failed to parse request body", exc_info=True)
-            return "", []
-        return _fetch_session_id(data), _parse_request_body(data)
+            return "", "", []
+        return session_id, agent_id, _parse_request_body(data)
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes) -> list[Message]:
         content_type = response.content_type.lower()
@@ -135,7 +138,8 @@ class ClaudeProxy(ProxyHandler):
     async def _pre_tool_use(self, event: dict[str, Any]) -> dict[str, Any] | None:
         tags = _set_common_tags(event)
         session_id = tags[AIGuardConstants.SESSION_ID_TAG]
-        messages = load_messages(self.agent(), session_id)
+        agent_id = event.get("agent_id", "")
+        messages = load_messages(self.agent(), session_id, agent_id)
         tool_name = event.get("tool_name", "")
         if tool_name == "Skill":
             # inject the skill content to validate if it can be safely loaded
@@ -158,7 +162,8 @@ class ClaudeProxy(ProxyHandler):
     async def _post_tool_use(self, event: dict[str, Any]) -> dict[str, Any] | None:
         tags = _set_common_tags(event)
         session_id = tags[AIGuardConstants.SESSION_ID_TAG]
-        messages = load_messages(self.agent(), session_id)
+        agent_id = event.get("agent_id", "")
+        messages = load_messages(self.agent(), session_id, agent_id)
         tool_response = event.get("tool_response", "")
         messages.append(
             Message(
@@ -178,7 +183,8 @@ class ClaudeProxy(ProxyHandler):
     async def _post_tool_use_failure(self, event: dict[str, Any]) -> dict[str, Any] | None:
         tags = _set_common_tags(event)
         session_id = tags[AIGuardConstants.SESSION_ID_TAG]
-        messages = load_messages(self.agent(), session_id)
+        agent_id = event.get("agent_id", "")
+        messages = load_messages(self.agent(), session_id, agent_id)
         messages.append(
             Message(
                 role="tool",
@@ -511,23 +517,18 @@ def _parse_request_body(data: dict) -> list[Message]:
     return result
 
 
-def _fetch_session_id(data: dict[str, Any]) -> str:
-    """Extract the Claude session id from an Anthropic Messages request body.
+def _fetch_session_keys(request: aiohttp.web.Request) -> tuple[str, str]:
+    """Extract ``(session_id, agent_id)`` from the Claude Code request headers.
 
-    Claude Code embeds session metadata as a JSON-encoded string in
-    ``metadata.user_id``. Returns ``""`` when missing or malformed.
+    Claude Code stamps ``X-Claude-Code-Session-Id`` on every Anthropic call and
+    adds ``X-Claude-Code-Agent-Id`` for sidechain (Task-spawned subagent)
+    traffic, so the proxy can route writes to a per-subagent storage slot
+    instead of clobbering the parent session's history. Either component falls
+    back to ``""`` when the header is missing.
     """
-    raw_user_id = (data.get("metadata") or {}).get("user_id", "")
-    if not isinstance(raw_user_id, str) or not raw_user_id:
-        return ""
-    try:
-        parsed = json.loads(raw_user_id)
-    except (json.JSONDecodeError, ValueError):
-        return ""
-    if not isinstance(parsed, dict):
-        return ""
-    sid = parsed.get("session_id", "")
-    return sid if isinstance(sid, str) else ""
+    sid = request.headers.get("X-Claude-Code-Session-Id", "")
+    aid = request.headers.get("X-Claude-Code-Agent-Id", "")
+    return sid, aid
 
 
 def _parse_body(content_type: str, body: bytes) -> list[Message]:

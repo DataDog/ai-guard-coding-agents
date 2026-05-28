@@ -42,6 +42,13 @@ CLAUDE_UA = "claude-cli/1.2.3 (External, cli)"
 HOOK_UA = "ai-guard-cli/test"
 FIXTURE_SSE = Path(__file__).resolve().parents[1] / "fixtures" / "anthropic_sse_stream.txt"
 
+# Claude Code stamps the session/agent identifiers on every Anthropic call;
+# the proxy reads these to route storage to the right per-subagent slot.
+SESSION_HEADERS = {
+    "User-Agent": CLAUDE_UA,
+    "X-Claude-Code-Session-Id": "sess-abc",
+}
+
 
 # ── Passthrough + storage ─────────────────────────────────────────────────────
 
@@ -66,13 +73,13 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=anthropic_request_body,
-            headers={"User-Agent": CLAUDE_UA, "x-api-key": "sk-test"},
+            headers={**SESSION_HEADERS, "x-api-key": "sk-test"},
         ) as resp:
             assert resp.status == 200
             body = await resp.json()
             assert body["id"] == anthropic_response_body["id"]
 
-        # Session id is embedded in metadata.user_id JSON in the request body.
+        # Session id comes from the X-Claude-Code-Session-Id header.
         stored = storage.load_messages("claude", "sess-abc")
         roles = [m["role"] for m in stored]
         assert roles[0] == "system"
@@ -147,7 +154,7 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=anthropic_request_body,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ):
             pass
 
@@ -170,7 +177,7 @@ class TestProxyPassthrough:
         async with client.post(
             "/v1/messages",
             json=turn2_body,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ):
             pass
 
@@ -181,6 +188,63 @@ class TestProxyPassthrough:
         # The "Anything else?" prompt from turn 2's request is present exactly once.
         user_texts = [m for m in after_turn2 if m.get("role") == "user"]
         assert sum(1 for m in user_texts if "Anything else?" in str(m.get("content", ""))) == 1
+
+    async def test_subagent_and_main_session_persist_to_separate_slots(
+        self,
+        proxy_client,
+        storage_root: Path,
+        anthropic_response_body: dict[str, Any],
+    ) -> None:
+        """Main session and subagent share the Claude session_id but live in
+        separate slot files — neither overwrites the other. This is the
+        regression guard for the original "conversations mixed in the proxy"
+        bug: storage keyed only by session_id meant the last writer won. The
+        proxy distinguishes them via the X-Claude-Code-Agent-Id header that
+        Claude Code stamps on sidechain traffic."""
+
+        async def handler(request: aiohttp.web.Request) -> aiohttp.web.Response:
+            return aiohttp.web.json_response(anthropic_response_body)
+
+        client = await proxy_client(handler)
+        session_id = "sess-shared"
+        main_headers = {
+            "User-Agent": CLAUDE_UA,
+            "X-Claude-Code-Session-Id": session_id,
+        }
+        sub_headers = {
+            **main_headers,
+            "X-Claude-Code-Agent-Id": "a14cb",
+        }
+
+        main_body = {
+            "model": "claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "main: write a haiku"}],
+        }
+        sub_body = {
+            "model": "claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "sub: list the project files"}],
+        }
+
+        # Interleave: subagent fires between two main-session turns.
+        async with client.post("/v1/messages", json=main_body, headers=main_headers):
+            pass
+        async with client.post("/v1/messages", json=sub_body, headers=sub_headers):
+            pass
+        async with client.post("/v1/messages", json=main_body, headers=main_headers):
+            pass
+
+        main_history = storage.load_messages("claude", session_id)
+        sub_history = storage.load_messages("claude", session_id, "a14cb")
+
+        assert any("main: write a haiku" in str(m.get("content", "")) for m in main_history)
+        assert all("sub:" not in str(m.get("content", "")) for m in main_history), (
+            "subagent prompt leaked into the main session slot"
+        )
+
+        assert any("sub: list the project files" in str(m.get("content", "")) for m in sub_history)
+        assert all("main:" not in str(m.get("content", "")) for m in sub_history), (
+            "main session leaked into the subagent slot"
+        )
 
     async def test_claude_ua_with_off_path_still_forwards_upstream(
         self, proxy_client, anthropic_response_body, storage_root: Path
@@ -228,7 +292,7 @@ class TestProxyStreaming:
         async with client.post(
             "/v1/messages",
             json=streamed,
-            headers={"User-Agent": CLAUDE_UA},
+            headers=SESSION_HEADERS,
         ) as resp:
             assert resp.status == 200
             assert await resp.read() == sse_body
@@ -319,7 +383,7 @@ class _StubHandler(ProxyHandler):
         return self._ua_substring in request.headers.get("User-Agent", "")
 
     def parse_request(self, request: aiohttp.web.Request, body: bytes):
-        return "", []
+        return "", "", []
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes):
         return []
@@ -478,7 +542,7 @@ class _RecordingHandler(ProxyHandler):
         return False
 
     def parse_request(self, request: aiohttp.web.Request, body: bytes):
-        return "", []
+        return "", "", []
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes):
         return []

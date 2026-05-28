@@ -18,7 +18,7 @@ Both flows ultimately land in a single `ProxyHandler` (`ClaudeProxy`) that does 
 ├── src/aiguard/
 │   ├── cli.py                      # Top-level Click CLI: `proxy`, `hook` commands
 │   ├── constants.py                # AIGuardConstants — span names + tag keys
-│   ├── storage.py                  # Per-session JSON persistence under $XDG_STATE_HOME/ai-guard/<agent>/<sid>.json
+│   ├── storage.py                  # Per-session JSON persistence under $XDG_STATE_HOME/ai-guard/<agent>/<sid>/<slot>.json (slot is `main` for the parent session or the subagent's agent_id)
 │   ├── hooks/
 │   │   └── hooks.py                # `ai-guard hook` HTTP shim (aiohttp client → proxy)
 │   ├── proxy/
@@ -89,12 +89,12 @@ Dispatch is dynamic: `getattr(self, "_" + camel_to_snake(hook), None)`. To add a
 `Proxy._handle` routes by request `User-Agent`:
 
 - **`User-Agent` contains `ai-guard-cli`** → `_handle_hook`. The path must be `/hook/<agent>/<hook>`; otherwise 404.
-- **Anything else** → `_handle_proxy`. The first handler whose `matches(request)` returns true gets it; the request body is run through `handler.parse_request(...) → (session_id, messages)` and persisted via `storage.save_messages`. The request is forwarded to **`handler.upstream()`** (each handler owns its upstream), and after the response streams through, response messages parsed by `handler.parse_response(...)` are appended via load + save.
+- **Anything else** → `_handle_proxy`. The first handler whose `matches(request)` returns true gets it; the request body is run through `handler.parse_request(...) → (session_id, agent_id, messages)` and persisted via `storage.save_messages(..., agent_id=...)` so subagent traffic lands in its own slot. The request is forwarded to **`handler.upstream()`** (each handler owns its upstream), and after the response streams through, response messages parsed by `handler.parse_response(...)` are appended via load + save.
 - **No handler claims the request** → `502 Bad Gateway` with `text="no handler claims <method> <path>"`. The proxy is intentionally per-agent; there is no global passthrough.
 
-`matches()` is User-Agent-only by convention (`ClaudeProxy.matches` checks for `claude-cli`); method/path/content-type validation belongs in `parse_request`, which returns `("", [])` to skip persistence without rejecting the request.
+`matches()` is User-Agent-only by convention (`ClaudeProxy.matches` checks for `claude-cli`); method/path/content-type validation belongs in `parse_request`, which returns `("", "", [])` to skip persistence without rejecting the request.
 
-Storage layout is `$XDG_STATE_HOME/ai-guard/<agent>/<session_id>.json` (overridable with `DD_AI_GUARD_HOME`). `storage._session_file` resolves the candidate path and runs a `relative_to(root)` containment check, so a hostile `agent`/`session_id` that escapes the storage tree short-circuits to a no-op (load returns `[]`, save/delete log + bail).
+Storage layout is `$XDG_STATE_HOME/ai-guard/<agent>/<session_id>/<slot>.json` (overridable with `DD_AI_GUARD_HOME`). The slot is `main` for the parent session and the subagent's `agent_id` for sidechain calls, so a Task-spawned subagent that shares the Claude `session_id` gets its own history file instead of overwriting the parent's. The session/agent identifiers come from the `X-Claude-Code-Session-Id` and `X-Claude-Code-Agent-Id` headers that Claude Code stamps on every Anthropic request (the agent header is absent for the parent session). `storage._safe_resolve` resolves the candidate path and checks `candidate.parts == root.parts + segments` (a plain `relative_to(root)` test isn't enough — `..` and `../other` resolve *inside* the root and would still pass), so a hostile `agent`/`session_id`/`agent_id` that escapes the storage tree short-circuits to a no-op (load returns `[]`, save/delete log + bail). `SessionEnd` deletes the whole `<session_id>/` directory — every subagent slot included.
 
 The proxy does **not** evaluate during proxying — it only persists. AI Guard evaluation happens inside the hook handlers (`_pre_tool_use` / `_post_tool_use` / `_post_tool_use_failure`), which load the persisted history, append the new tool exchange, and call `self._ai_guard.evaluate(...)`.
 
@@ -126,7 +126,7 @@ If the hook needs new span tags or operation names, add constants in `src/aiguar
    - `agent()` — lowercase name used in `/hook/<agent>/...` URLs and CLI invocations.
    - `upstream()` — the LLM API base URL the proxy will forward to when this handler matches.
    - `matches(request)` — return true when this handler claims the request (User-Agent check by convention).
-   - `parse_request(request, body) -> (session_id, messages)` — return `("", [])` to skip persistence.
+   - `parse_request(request, body) -> (session_id, agent_id, messages)` — `agent_id` is empty for the parent session and the subagent's identifier when present, so storage can keep sidechain history in its own slot. Return `("", "", [])` to skip persistence.
    - `parse_response(response, body) -> messages`.
    - `handle_hook(hook, payload) -> bytes` (async).
 2. Register the handler in `proxy/server.py:proxy()` alongside `ClaudeProxy`. Add a `--<agent>-upstream` Click option (`DD_AI_GUARD_<AGENT>_UPSTREAM` envvar) with a sensible default.
@@ -168,7 +168,7 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 - **The hook CLI's `User-Agent: ai-guard-cli/<version>` is load-bearing.** The proxy uses that substring to decide between `_handle_hook` and `_handle_proxy`. Any client that hits `/hook/...` directly (curl, scripts) must include the same UA or the request goes through the proxy path and fails.
 - **Per-agent upstreams, no global fallback.** Unmatched requests get 502 — the proxy is not a generic transparent forwarder. Every handler must declare its own `upstream()`.
 - **Proxy bound to localhost by default.** `--host` defaults to `127.0.0.1`. Pass `0.0.0.0` (or set `DD_AI_GUARD_PROXY_HOST=0.0.0.0`, as the docker-compose service does) only when something off-box must reach it.
-- **Path traversal is hardened in `storage.py`.** Any change that builds a file path from user-controlled input must go through `storage._session_file` (which resolves the candidate and `relative_to(root)`-checks containment), not raw concatenation.
+- **Path traversal is hardened in `storage.py`.** Any change that builds a file path from user-controlled input must go through `storage._safe_resolve` (which resolves the candidate and exact-matches `candidate.parts == root.parts + segments` — `relative_to(root)` alone misses `..`/`../other`), not raw concatenation.
 - **The proxy must preserve Anthropic response headers exactly** (especially `content-type: text/event-stream`) so Claude Code's SSE parser doesn't break. `_resp_headers` strips only hop-by-hop headers + `content-encoding`.
 
 ## Running locally with Docker Compose

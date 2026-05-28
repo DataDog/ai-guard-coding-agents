@@ -89,7 +89,26 @@ def wait_ready_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def claude_present(tmp_home: Path) -> Path:
+def claude_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend ``claude`` is on PATH at a version the installer accepts.
+
+    Tests that exercise the install/uninstall flow rely on
+    :meth:`ClaudeInstaller.detect` returning ``(True, ...)``, which in turn
+    shells out to ``claude --version``. We short-circuit both the lookup and
+    the version probe so the suite is hermetic.
+    """
+    from semantic_version import Version
+
+    monkeypatch.setattr(
+        "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+    )
+    monkeypatch.setattr(
+        ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("9.9.9"))
+    )
+
+
+@pytest.fixture
+def claude_present(tmp_home: Path, claude_detected: None) -> Path:
     settings = tmp_home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text("{}")
@@ -267,19 +286,91 @@ class TestClaudeInstaller:
         assert "env" not in data
         assert "hooks" not in data
 
+    def test_is_installed_true_when_hooks_reference_ai_guard(self, tmp_home: Path) -> None:
+        _make_claude_dir(tmp_home)
+        ClaudeInstaller().install(PROXY)
+
+        assert ClaudeInstaller().is_installed() is True
+
+    def test_is_installed_false_on_pristine_settings(self, tmp_home: Path) -> None:
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Bash"]},
+                    "env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"},
+                }
+            )
+        )
+
+        assert ClaudeInstaller().is_installed() is False
+
+    def test_is_installed_true_when_only_proxy_env_remains(self, tmp_home: Path) -> None:
+        """User-edited settings can leave ``env.ANTHROPIC_BASE_URL`` pointing
+        at the proxy while the hook block was manually deleted. ``is_installed``
+        must still report True so the top-level uninstall driver runs
+        ``ClaudeInstaller.uninstall`` and restores or drops the env entry —
+        otherwise we'd delete the binary while Claude kept routing API traffic
+        at the now-dead local proxy."""
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
+
+        assert ClaudeInstaller().is_installed() is True
+
     def test_detect_finds_executable_on_path(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from semantic_version import Version
+
         monkeypatch.setattr(
             "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
         )
-        assert ClaudeInstaller().detect() is True
+        monkeypatch.setattr(
+            ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("9.9.9"))
+        )
+        supported, message = ClaudeInstaller().detect()
+        assert supported is True
+        assert "9.9.9" in message
+        assert "/usr/bin/claude" in message
 
     def test_detect_missing_dir_returns_false(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
-        assert ClaudeInstaller().detect() is False
+        supported, message = ClaudeInstaller().detect()
+        assert supported is False
+        assert message == "Claude not found"
+
+    def test_detect_rejects_old_version(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from semantic_version import Version
+
+        monkeypatch.setattr(
+            "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+        )
+        monkeypatch.setattr(
+            ClaudeInstaller, "_claude_version", staticmethod(lambda _: Version("2.0.0"))
+        )
+        supported, message = ClaudeInstaller().detect()
+        assert supported is False
+        assert "too old" in message
+        assert "2.0.0" in message
+
+    def test_detect_accepts_when_version_unknown(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If we can't parse a version, fall open: the binary is on PATH so
+        we report Claude as detected and let the user proceed. The message
+        must not interpolate ``None`` into a fake version suffix."""
+        monkeypatch.setattr(
+            "aiguard.claude.installer.detect_executable", lambda _: Path("/usr/bin/claude")
+        )
+        monkeypatch.setattr(ClaudeInstaller, "_claude_version", staticmethod(lambda _: None))
+        supported, message = ClaudeInstaller().detect()
+        assert supported is True
+        assert "/usr/bin/claude" in message
+        assert "None" not in message
 
 
 # =============================================================================
@@ -775,6 +866,7 @@ class TestCli:
         stub_platform: None,
         wait_ready_ok: None,
         staged_binary: Path,
+        claude_detected: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         settings = tmp_home / ".claude" / "settings.json"
@@ -793,6 +885,61 @@ class TestCli:
         env_content = paths.config_env_path().read_text()
         assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" in env_content
         assert "https://upstream.example/v1" in env_content
+
+    def test_uninstall_cleans_hooks_when_agent_no_longer_supported(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Once hooks are wired into settings.json, uninstall must roll them
+        back even if the agent itself has been removed or downgraded below the
+        supported version between install and uninstall — otherwise the
+        binary at ~/.local/bin/ai-guard gets deleted while settings.json keeps
+        a dead hook block pointing at it."""
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        inst = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert inst.exit_code == 0, inst.output + str(inst.exception or "")
+        assert json.loads(claude_present.read_text()).get("hooks")
+
+        # Simulate "claude was removed (or downgraded below the min version)
+        # after install" — detect() now returns (False, ...) but the hooks
+        # block in settings.json still points at ai-guard.
+        monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
+
+        uninst = CliRunner().invoke(uninstall, ["--yes", "--no-color"])
+        assert uninst.exit_code == 0, uninst.output + str(uninst.exception or "")
+
+        data = json.loads(claude_present.read_text())
+        assert not data.get("hooks")
+
+    def test_install_aborts_when_no_agents_pass_detection(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Detection that turns up only unsupported agents must abort rather
+        than producing a "successful" install with no hooks wired (Claude
+        below ``CLAUDE_MIN_VERSION`` is the practical trigger now that the
+        version gate lives in ``ClaudeInstaller.detect``)."""
+        monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+
+        assert result.exit_code != 0
+        # No side effects past detection: config + service must not exist.
+        assert not paths.config_env_path().exists()
+        assert not paths.systemd_unit_path().exists()
 
     def test_uninstall_leaves_only_app_log(
         self,
@@ -899,6 +1046,7 @@ class TestCli:
         stub_platform: None,
         wait_ready_ok: None,
         staged_binary: Path,
+        claude_detected: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After re-install, config.env must still hold the user's original upstream.
@@ -1037,8 +1185,18 @@ class FakeAgent(AgentInstaller):
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    def detect(self) -> bool:
-        return self._settings_path.parent.exists()
+    def detect(self) -> tuple[bool, str]:
+        if self._settings_path.parent.exists():
+            return True, f"fake agent at {self._settings_path.parent}"
+        return False, "fake agent not found"
+
+    def is_installed(self) -> bool:
+        if not self._settings_path.exists():
+            return False
+        return any(
+            h.get("command", "").startswith("ai-guard hook")
+            for h in self._load().get("hooks") or []
+        )
 
     def env_fields(self) -> list[Field]:
         # FakeAgent demonstrates a non-Anthropic agent contributing its own
