@@ -9,10 +9,14 @@
   poll loop. Used by the installer to confirm the proxy came up.
 * :func:`detect_executable` — :func:`shutil.which` wrapper returning a
   :class:`Path`. Used by agent installers to test whether a tool is on PATH.
+* :func:`fetch_endpoint_id` — portable ``<os_user>@<hostname>`` identifier
+  used as the ``ai_guard.usr.id`` tag value across all coding-agent handlers.
 """
 
 from __future__ import annotations
 
+import getpass
+import logging
 import os
 import shutil
 import socket
@@ -22,6 +26,8 @@ import time
 from collections.abc import Callable
 from io import TextIOWrapper
 from pathlib import Path
+
+logger = logging.getLogger("ai_guard")
 
 
 def atomic_write(
@@ -79,3 +85,26 @@ def wait_ready(host: str, port: int, timeout: float = 5.0, interval: float = 0.1
 def detect_executable(name: str) -> Path | None:
     found = shutil.which(name)
     return Path(found) if found else None
+
+
+def fetch_hostname() -> str | None:
+    try:
+        return socket.gethostname()
+    except OSError:
+        logger.debug("fetch_endpoint_id: socket.gethostname() failed", exc_info=True)
+        return None
+
+
+def fetch_user() -> str | None:
+    try:
+        return getpass.getuser()
+    except Exception:
+        logger.debug("fetch_endpoint_id: getpass.getuser() failed", exc_info=True)
+        return None
+
+
+def fetch_endpoint_id() -> str:
+    """Return ``<os_user>@<hostname>`` for the current process."""
+    hostname = fetch_hostname() or "-"
+    user = fetch_user() or "-"
+    return f"{user}@{hostname}"

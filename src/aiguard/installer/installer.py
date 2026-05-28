@@ -68,6 +68,12 @@ FIELDS: list[Field] = [
         default="ERROR",
         tier=3,
     ),
+    Field(
+        "DD_TRACE_REPORT_HOSTNAME",
+        "Report the hostname in traces",
+        default="True",
+        tier=3,
+    ),
 ]
 
 

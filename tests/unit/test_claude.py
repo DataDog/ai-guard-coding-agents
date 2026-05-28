@@ -8,7 +8,6 @@
 
 Grouped into classes by what's being tested:
 
-  * :class:`TestClaudeUtil` — ``fetch_user_id``.
   * :class:`TestClaudeProxyMatches` — ``ClaudeProxy.matches`` (the routing
     key) and the rest of the ``ProxyHandler`` surface (``agent``,
     ``upstream``).
@@ -19,7 +18,7 @@ Grouped into classes by what's being tested:
   * :class:`TestSSEResponseParser` — ``_parse_sse_body``.
   * :class:`TestHandleHookSpans` — span-emitting hooks (Session/Subagent).
   * :class:`TestHandleHookToolUse` — Pre/Post tool hooks.
-  * :class:`TestHandleHookTags` — user-email tagging.
+  * :class:`TestHandleHookTags` — user-id tagging (user@host).
   * :class:`TestHandleHookDispatch` — payload tolerance + camelCase dispatch.
 """
 
@@ -45,7 +44,6 @@ from aiguard.claude.proxy import (
     _parse_request_body,
     _parse_sse_body,
 )
-from aiguard.claude.util import fetch_user_id
 from aiguard.constants import AIGuardConstants
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -53,31 +51,6 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 def _proxy() -> ClaudeProxy:
     return ClaudeProxy(upstream="http://upstream.invalid", blocking=True)
-
-
-# ── claude/util.py ────────────────────────────────────────────────────────────
-
-
-class TestClaudeUtil:
-    """``fetch_user_id`` reads ``~/.claude.json`` defensively."""
-
-    def test_returns_none_when_file_missing(self, tmp_home: Path) -> None:
-        assert fetch_user_id() is None
-
-    def test_returns_none_when_file_malformed(self, tmp_home: Path) -> None:
-        (tmp_home / ".claude.json").write_text("{not json")
-        assert fetch_user_id() is None
-
-    def test_returns_none_when_oauth_account_missing(self, tmp_home: Path) -> None:
-        (tmp_home / ".claude.json").write_text('{"foo": "bar"}')
-        assert fetch_user_id() is None
-
-    def test_returns_email_when_present(self, tmp_home: Path, claude_user_json: str) -> None:
-        assert fetch_user_id() == claude_user_json
-
-    def test_returns_none_when_email_field_missing(self, tmp_home: Path) -> None:
-        (tmp_home / ".claude.json").write_text('{"oauthAccount": {}}')
-        assert fetch_user_id() is None
 
 
 # ── claude/proxy.py — ClaudeProxy public surface ──────────────────────────────
@@ -791,17 +764,13 @@ class TestHandleHookToolUse:
 
 
 class TestHandleHookTags:
-    """Span tagging picks up the user email from ``~/.claude.json`` when set."""
+    """Span tagging picks up the ``user@host`` id from ``utils.fetch_endpoint_id``."""
 
-    async def test_includes_user_email_tag_when_available(
-        self, tracer_recorder, claude_user_json: str, tmp_home: Path
+    async def test_tags_user_id_from_fetch_endpoint_id(
+        self, tracer_recorder, fake_endpoint_id: str, tmp_home: Path
     ) -> None:
         await _proxy().handle_hook("SessionStart", json.dumps({"session_id": "s1"}).encode())
-        assert tracer_recorder.spans[0].tags[AIGuardConstants.USER_ID_TAG] == claude_user_json
-
-    async def test_skips_user_tag_when_email_missing(self, tracer_recorder, tmp_home: Path) -> None:
-        await _proxy().handle_hook("SessionStart", json.dumps({"session_id": "s"}).encode())
-        assert AIGuardConstants.USER_ID_TAG not in tracer_recorder.spans[0].tags
+        assert tracer_recorder.spans[0].tags[AIGuardConstants.USER_ID_TAG] == fake_endpoint_id
 
 
 class TestHandleHookDispatch:

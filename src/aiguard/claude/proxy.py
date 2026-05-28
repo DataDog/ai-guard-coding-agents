@@ -27,8 +27,9 @@ from ddtrace.appsec.ai_guard import (
     ToolCall,
     new_ai_guard_client,
 )
+from ddtrace.ext import user
 
-from aiguard.claude.util import fetch_user_id
+from aiguard import utils
 from aiguard.constants import AIGuardConstants
 from aiguard.proxy.server import ProxyHandler
 from aiguard.proxy.util import parse_sse
@@ -236,6 +237,18 @@ def _ai_guard_ui_url(session_id: str) -> str | None:
     return f"https://{host}/security/ai-guard/investigate?query={query}&group_by=session"
 
 
+def _fetch_email() -> str | None:
+    """Return the email of the authenticated Claude Code user from ~/.claude.json."""
+    try:
+        data = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
+        email = data.get("oauthAccount", {}).get("emailAddress")
+        if email:
+            return email
+    except (OSError, json.JSONDecodeError, AttributeError):
+        logger.debug("failed to read ~/.claude.json", exc_info=True)
+    return None
+
+
 def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
     tags: dict[str, Any] = {
         AIGuardConstants.CODING_AGENT_TAG: AIGuardConstants.CLAUDE_CODE,
@@ -244,10 +257,12 @@ def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
     if "model" in event:
         tags[AIGuardConstants.MODEL_TAG] = event["model"]
 
-    email = fetch_user_id()
+    email = _fetch_email()
     if email:
-        tags[AIGuardConstants.USER_ID_TAG] = email
-
+        tags[user.EMAIL] = email
+    user_id = utils.fetch_endpoint_id()
+    tags[user.ID] = user_id
+    tags[AIGuardConstants.USER_ID_TAG] = user_id
     tags[AIGuardConstants.SESSION_ID_TAG] = event.get("session_id", "")
     agent_id = event.get("agent_id", "")
     if agent_id:
