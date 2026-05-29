@@ -14,65 +14,69 @@ from aiguard import paths, utils
 from aiguard.claude.installer import ClaudeInstaller
 from aiguard.constants import AIGuardConstants
 from aiguard.installer import ui
-from aiguard.installer.agent import AgentInstaller, Field
+from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.installer.service import manager as service_manager
 from aiguard.storage import load_config, save_config
 from aiguard.utils import wait_ready
 
 SUPPORTED_AGENTS: list[AgentInstaller] = [ClaudeInstaller()]
 
-# List of fields divided by tiers:
-# 1 -> should be always prompted unless non-interactive
-# 2 -> should be prompted only in advanced mode
-# 3 -> should never be prompted to users
 FIELDS: list[Field] = [
-    Field("DD_SITE", "Site", default="datadoghq.com", tier=1),
-    Field("DD_API_KEY", "API key", default=None, secret=True, tier=1),
-    Field("DD_APP_KEY", "Application key", default=None, secret=True, tier=1),
-    Field("DD_ENV", "Environment", default="prod", tier=1),
-    Field("DD_SERVICE", "Service name", default=None, tier=1),
-    Field("DD_VERSION", "Service version", default="1.0", tier=1),
+    Field("DD_SITE", "Site", default="datadoghq.com", tier=Tier.REQUIRED),
+    Field("DD_API_KEY", "API key", default=None, secret=True, tier=Tier.REQUIRED),
+    Field("DD_APP_KEY", "Application key", default=None, secret=True, tier=Tier.REQUIRED),
+    Field("DD_ENV", "Environment", default="prod", tier=Tier.REQUIRED),
+    Field("DD_SERVICE", "Service name", default=None, tier=Tier.REQUIRED),
+    Field("DD_VERSION", "Service version", default="1.0", tier=Tier.REQUIRED),
     Field(
-        "DD_AI_GUARD_BLOCK", "Block on unsafe verdict (else observe-only)", default="True", tier=2
+        "DD_AI_GUARD_BLOCK",
+        "Block on unsafe verdict (else observe-only)",
+        default="True",
+        tier=Tier.ADVANCED,
     ),
     Field(
         "DD_AI_GUARD_PROXY_HOST",
         "Proxy bind host",
         default=AIGuardConstants.PROXY_HOST_DEFAULT,
-        tier=2,
+        tier=Tier.ADVANCED,
     ),
     Field(
         "DD_AI_GUARD_PROXY_PORT",
         "Proxy bind port",
         default=str(AIGuardConstants.PROXY_PORT_DEFAULT),
-        tier=2,
+        tier=Tier.ADVANCED,
     ),
-    Field("DD_TRACE_ENABLED", "Enable tracing", default="True", tier=3),
-    Field("DD_AI_GUARD_ENABLED", "Enable AI Guard", default="True", tier=3),
+    Field("DD_TRACE_ENABLED", "Enable tracing", default="True", tier=Tier.SILENT),
+    Field("DD_AI_GUARD_ENABLED", "Enable AI Guard", default="True", tier=Tier.SILENT),
     Field(
         "DD_INSTRUMENTATION_TELEMETRY_ENABLED",
         "Enable instrumentation telemetry",
         default="False",
-        tier=3,
+        tier=Tier.SILENT,
     ),
-    Field("_DD_APM_TRACING_AGENTLESS_ENABLED", "Enable agentless tracer", default="true", tier=3),
+    Field(
+        "_DD_APM_TRACING_AGENTLESS_ENABLED",
+        "Enable agentless tracer",
+        default="true",
+        tier=Tier.SILENT,
+    ),
     Field(
         "DD_AI_GUARD_PROXY_IDLE_TIMEOUT",
         "Shut down after N seconds with no requests (0 keeps the LLM proxy running forever)",
         default="300",
-        tier=3,
+        tier=Tier.SILENT,
     ),
     Field(
         "DD_AI_GUARD_LOG_LEVEL",
         "Default logging level",
         default="ERROR",
-        tier=3,
+        tier=Tier.SILENT,
     ),
     Field(
         "DD_TRACE_REPORT_HOSTNAME",
         "Report the hostname in traces",
         default="True",
-        tier=3,
+        tier=Tier.SILENT,
     ),
 ]
 
@@ -86,7 +90,7 @@ class MissingRequiredError(RuntimeError):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _find_fields(agents: list[AgentInstaller], tier: int = 1) -> list[Field]:
+def _find_fields(agents: list[AgentInstaller], tier: Tier = Tier.REQUIRED) -> list[Field]:
     seen: set[str] = set()
     fields: list[Field] = []
     for field in FIELDS:
@@ -109,17 +113,25 @@ def _collect_fields(
     agents: list[AgentInstaller],
 ) -> dict[str, str]:
     """Return the full config values map, prompting where appropriate."""
-    fields = _find_fields(agents, 3)
+    fields = _find_fields(agents, Tier.PASSTHROUGH)
 
     values: dict[str, str] = {}
     for field in fields:
-        skip_prompt = non_interactive or field.tier == 3 or (field.tier == 2 and not advanced)
+        skip_prompt = (
+            non_interactive
+            or field.tier >= Tier.SILENT
+            or (field.tier == Tier.ADVANCED and not advanced)
+        )
         if skip_prompt:
             env_value = env.get(field.key)
             if env_value:
                 values[field.key] = env_value
             elif field.default is not None:
                 values[field.key] = field.default
+            elif field.tier == Tier.PASSTHROUGH:
+                # No env value, no default — passthrough fields are saved only
+                # when the user actually sets them. Skip silently.
+                continue
             else:
                 raise MissingRequiredError(field.key)
         else:
@@ -310,7 +322,7 @@ def install(
     # Make sure the config, state, and bin dirs exist before we ask the user
     # for anything. Config and state live under XDG_CONFIG_HOME and
     # XDG_STATE_HOME respectively.
-    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    paths.ai_guard_config_dir().mkdir(parents=True, exist_ok=True)
     paths.state_dir().mkdir(parents=True, exist_ok=True)
     paths.local_bin_dir().mkdir(parents=True, exist_ok=True)
 
@@ -353,7 +365,7 @@ def install(
 
     if non_interactive:
         ui.ok(c, "values sourced from the environment")
-        for field in _find_fields(agents, tier=2):
+        for field in _find_fields(agents, tier=Tier.ADVANCED):
             value = values.get(field.key)
             if value is None:
                 continue
@@ -519,7 +531,7 @@ def _purge_state_dir() -> None:
     The proxy's rotating application log (``ai-guard.log*``) is left in place
     so the user keeps a forensic trail after uninstall.
     """
-    config = paths.config_dir()
+    config = paths.ai_guard_config_dir()
     if config.exists():
         shutil.rmtree(config, ignore_errors=True)
 

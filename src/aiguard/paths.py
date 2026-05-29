@@ -16,10 +16,14 @@ def home() -> Path:
     return Path.home()
 
 
-def config_dir() -> Path:
+def config_home() -> Path:
+    """``$XDG_CONFIG_HOME`` or ``~/.config``."""
+    return Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")).expanduser()
+
+
+def ai_guard_config_dir() -> Path:
     """``$XDG_CONFIG_HOME/ai-guard`` — user-facing configuration."""
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "ai-guard"
+    return config_home() / "ai-guard"
 
 
 def state_dir() -> Path:
@@ -29,13 +33,13 @@ def state_dir() -> Path:
     storage at a sandboxed tmpdir.
     """
     if explicit := os.environ.get("DD_AI_GUARD_HOME"):
-        return Path(explicit)
+        return Path(explicit).expanduser()
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return Path(base) / "ai-guard"
+    return Path(base).expanduser() / "ai-guard"
 
 
 def config_env_path() -> Path:
-    return config_dir() / "config.env"
+    return ai_guard_config_dir() / "config.env"
 
 
 def log_file_path() -> Path:
@@ -73,13 +77,30 @@ def launchd_plist_path() -> Path:
     return home() / "Library" / "LaunchAgents" / f"{AIGuardConstants.LAUNCHD_LABEL}.plist"
 
 
+def systemd_path() -> Path:
+    return config_home() / "systemd" / "user"
+
+
 def systemd_unit_path() -> Path:
-    return home() / ".config" / "systemd" / "user" / AIGuardConstants.SYSTEMD_UNIT_NAME
+    return systemd_path() / AIGuardConstants.SYSTEMD_UNIT_NAME
 
 
 def systemd_socket_path() -> Path:
-    return home() / ".config" / "systemd" / "user" / AIGuardConstants.SYSTEMD_SOCKET_NAME
+    return systemd_path() / AIGuardConstants.SYSTEMD_SOCKET_NAME
+
+
+def claude_config_dir() -> Path:
+    """Claude Code's config directory."""
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not override:
+        # Lazy import: storage imports paths, so a module-level import cycles.
+        from aiguard import storage
+
+        override = storage.load_config().get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    return home() / ".claude"
 
 
 def claude_settings_path() -> Path:
-    return home() / ".claude" / "settings.json"
+    return claude_config_dir() / "settings.json"

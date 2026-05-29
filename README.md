@@ -53,18 +53,18 @@ The bootstrap script checks for these upfront and exits with a clear error if an
 
 Every path the installer creates or modifies is listed below — nothing else on your machine is touched.
 
-| Path                                                  | Purpose                                                       | OS      | Agent         |
-|-------------------------------------------------------|---------------------------------------------------------------|---------|---------------|
-| `~/.local/share/ai-guard/`                            | PyInstaller onedir bundle (launcher + `_internal/`).          | `*`     | `*`           |
-| `~/.local/bin/ai-guard`                               | Symlink to the bundle launcher — your `PATH` entry.           | `*`     | `*`           |
-| `~/.local/bin/ai-guard-service`                       | Wrapper script invoked by launchd / systemd.                  | `*`     | `*`           |
-| `~/.local/state/ai-guard/ai-guard.log`                | Rotating application log.                                     | `*`     | `*`           |
-| `~/.local/state/ai-guard/<agent>/<session_id>.json`   | Per-session message history used to build AI Guard requests.  | `*`     | `*`           |
-| `~/.config/ai-guard/config.env`                       | Persisted configuration values (mode `0600`).                 | `*`     | `*`           |
-| `~/.config/systemd/user/ai-guard.socket`              | Listening socket, enabled with `systemctl --user`.            | `linux` | `*`           |
-| `~/.config/systemd/user/ai-guard.service`             | Service activated on demand by `ai-guard.socket`.             | `linux` | `*`           |
-| `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist` | LaunchAgent loaded via `launchctl bootstrap`.                 | `macOS` | `*`           |
-| `~/.claude/settings.json`                             | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`.     | `*`     | `Claude Code` |
+| Path                                                               | Purpose                                                      | OS      | Agent         |
+|--------------------------------------------------------------------|--------------------------------------------------------------|---------|---------------|
+| `~/.local/share/ai-guard/`                                         | PyInstaller onedir bundle (launcher + `_internal/`).         | `*`     | `*`           |
+| `~/.local/bin/ai-guard`                                            | Symlink to the bundle launcher.                              | `*`     | `*`           |
+| `~/.local/bin/ai-guard-service`                                    | Wrapper script invoked by launchd / systemd.                 | `*`     | `*`           |
+| `${XDG_STATE_HOME:-~/.local/state}/ai-guard/ai-guard.log`          | Rotating application log.                                    | `*`     | `*`           |
+| `${XDG_STATE_HOME:-~/.local/state}/ai-guard/<agent>/<session_id>/` | Per-session message history used to build AI Guard requests. | `*`     | `*`           |
+| `${XDG_CONFIG_HOME:-~/.config}/ai-guard/config.env`                | Persisted configuration values (mode `0600`).                | `*`     | `*`           |
+| `${XDG_CONFIG_HOME:-~/.config}/systemd/user/ai-guard.socket`       | Listening socket, enabled with `systemctl --user`.           | `linux` | `*`           |
+| `${XDG_CONFIG_HOME:-~/.config}/systemd/user/ai-guard.service`      | Service activated on demand by `ai-guard.socket`.            | `linux` | `*`           |
+| `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist`              | LaunchAgent loaded via `launchctl bootstrap`.                | `macOS` | `*`           |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`                    | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`.    | `*`     | `Claude Code` |
 
 Paths follow the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) and honour
 `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set.
