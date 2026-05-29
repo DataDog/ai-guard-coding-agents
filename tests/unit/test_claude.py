@@ -719,6 +719,56 @@ class TestHandleHookToolUse:
         assert last["tool_call_id"] == "tu1"
         assert "my-skill body" in last["content"]
 
+    async def test_pre_tool_use_skill_lookup_honours_claude_config_dir(
+        self,
+        tracer_recorder,
+        tmp_home: Path,
+        fake_ai_guard,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """User-level skill lookup follows ``$CLAUDE_CONFIG_DIR`` when set."""
+        override = tmp_home / "work-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+        skill_dir = override / "skills" / "scoped-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# scoped-skill body")
+
+        # Sibling skill at the default location must NOT be picked up — the
+        # override is the only place we should resolve user-level skills from.
+        decoy = tmp_home / ".claude" / "skills" / "scoped-skill"
+        decoy.mkdir(parents=True)
+        (decoy / "SKILL.md").write_text("# decoy body")
+
+        storage.save_messages(
+            "claude",
+            "s-skill-override",
+            [
+                Message(role="user", content="run a skill"),
+                Message(role="assistant", content="ok, loading"),
+            ],
+        )
+
+        out = await _proxy().handle_hook(
+            "PreToolUse",
+            json.dumps(
+                {
+                    "session_id": "s-skill-override",
+                    # cwd outside tmp_home so the project-walk branch finds nothing.
+                    "cwd": "/",
+                    "tool_use_id": "tu1",
+                    "tool_name": "Skill",
+                    "tool_input": {"skill": "scoped-skill"},
+                }
+            ).encode(),
+        )
+
+        assert out == b""
+        messages, _ = fake_ai_guard.calls[0]
+        last = messages[-1]
+        assert last["role"] == "tool"
+        assert "scoped-skill body" in last["content"]
+        assert "decoy body" not in last["content"]
+
     async def test_pre_tool_use_returns_deny_payload_when_ai_guard_aborts(
         self, tracer_recorder, tmp_home: Path, fake_ai_guard
     ) -> None:

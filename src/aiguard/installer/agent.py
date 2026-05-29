@@ -9,7 +9,29 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
+
+
+class Tier(IntEnum):
+    """How the installer treats a :class:`Field` during ``ai-guard install``.
+
+    * :attr:`REQUIRED` — always prompted; in ``--non-interactive`` it must
+      come from the environment (or be carried over from ``config.env``).
+    * :attr:`ADVANCED` — prompted only under ``--advanced``; otherwise the
+      hardcoded default is written silently.
+    * :attr:`SILENT` — never prompted; the hardcoded default is always
+      written (env overrides still win).
+    * :attr:`PASSTHROUGH` — never prompted, no default. Persisted to
+      ``config.env`` only when the user actually sets it in the environment
+      (or it survives from a prior install). Use for env vars that the
+      service must inherit verbatim when present (e.g. ``CLAUDE_CONFIG_DIR``).
+    """
+
+    REQUIRED = 1
+    ADVANCED = 2
+    SILENT = 3
+    PASSTHROUGH = 4
 
 
 @dataclass(frozen=True)
@@ -26,7 +48,7 @@ class Field:
     label: str
     default: str | None = None
     secret: bool = False
-    tier: int = 1
+    tier: Tier = Tier.REQUIRED
 
 
 class AgentInstaller(ABC):

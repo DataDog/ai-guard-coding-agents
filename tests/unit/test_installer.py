@@ -39,10 +39,11 @@ from aiguard.claude.installer import (
 )
 from aiguard.installer import installer as installer_cli
 from aiguard.installer import ui
-from aiguard.installer.agent import AgentInstaller, Field
+from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.installer.installer import install, uninstall
 from aiguard.installer.service import wrapper
 from aiguard.installer.templates import render
+from aiguard.storage import save_config
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -132,6 +133,83 @@ def staged_binary(tmp_home: Path) -> Path:
         paths.binary_path().unlink()
     paths.binary_path().symlink_to(paths.bundle_executable())
     return paths.binary_path()
+
+
+# =============================================================================
+# aiguard/paths.py — Claude config-dir override (CLAUDE_CONFIG_DIR)
+# =============================================================================
+
+
+class TestClaudeConfigDir:
+    """``paths.claude_config_dir()`` honours ``$CLAUDE_CONFIG_DIR``.
+
+    Claude Code itself uses the same env var to relocate ``~/.claude/`` for
+    multi-account setups; the installer must follow so the hook block lands
+    next to the active account's ``settings.json``.
+    """
+
+    def test_default_is_dot_claude_under_home(self, tmp_home: Path) -> None:
+        assert paths.claude_config_dir() == tmp_home / ".claude"
+        assert paths.claude_settings_path() == tmp_home / ".claude" / "settings.json"
+
+    def test_env_var_overrides_default(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        override = tmp_home / "work-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+
+        assert paths.claude_config_dir() == override
+        assert paths.claude_settings_path() == override / "settings.json"
+
+    def test_env_var_expands_tilde(self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/personal-claude")
+        assert paths.claude_config_dir() == tmp_home / "personal-claude"
+
+    def test_falls_back_to_persisted_config(self, tmp_home: Path) -> None:
+        """A later install/uninstall from a shell that didn't re-export the
+        override must still resolve it from ``config.env``, not ``~/.claude``."""
+        override = tmp_home / "stored-claude"
+        save_config({"CLAUDE_CONFIG_DIR": str(override)})
+
+        assert paths.claude_config_dir() == override
+        assert paths.claude_settings_path() == override / "settings.json"
+
+    def test_live_env_wins_over_persisted_config(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        save_config({"CLAUDE_CONFIG_DIR": str(tmp_home / "stored-claude")})
+        live = tmp_home / "live-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(live))
+
+        assert paths.claude_config_dir() == live
+
+    def test_install_writes_to_overridden_settings_path(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        override = tmp_home / "alt-claude"
+        override.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+
+        updated = ClaudeInstaller().install(PROXY)
+
+        assert updated == [override / "settings.json"]
+        data = _read(override / "settings.json")
+        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
+        # The default ~/.claude/settings.json must stay untouched.
+        assert not (tmp_home / ".claude" / "settings.json").exists()
+
+
+class TestConfigHome:
+    """``paths.config_home()`` honours ``$XDG_CONFIG_HOME``."""
+
+    def test_default_is_dot_config_under_home(self, tmp_home: Path) -> None:
+        assert paths.config_home() == tmp_home / ".config"
+
+    def test_env_var_expands_tilde(self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Shell profiles routinely set XDG_CONFIG_HOME=~/.config; a literal ``~``
+        # must not resolve relative to the cwd.
+        monkeypatch.setenv("XDG_CONFIG_HOME", "~/xdg-config")
+        assert paths.config_home() == tmp_home / "xdg-config"
 
 
 # =============================================================================
@@ -264,8 +342,6 @@ class TestClaudeInstaller:
         purely settings-driven and the agent module never has to remember the
         original value itself.
         """
-        from aiguard.storage import save_config
-
         settings = _make_claude_dir(tmp_home) / "settings.json"
         settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
         save_config({"DD_AI_GUARD_ANTHROPIC_UPSTREAM": "https://upstream.example/v1"})
@@ -532,6 +608,40 @@ class TestCollectFields:
         assert values["DD_API_KEY"] == "envk"
         assert values["DD_APP_KEY"] == "enva"
         assert values["DD_SERVICE"] == "ai-guard"
+
+    def test_passthrough_field_omitted_when_env_unset(self) -> None:
+        """Tier-PASSTHROUGH fields with no env value and no default must not raise
+        and must not land in the resulting config map — they only get persisted
+        when the user explicitly sets them."""
+        values = _run_prompt(
+            {
+                "advanced": False,
+                "non_interactive": True,
+                "env": {"DD_API_KEY": "k", "DD_APP_KEY": "a", "DD_SERVICE": "s"},
+                "agents": [ClaudeInstaller()],
+            }
+        )
+        assert "CLAUDE_CONFIG_DIR" not in values
+
+    def test_passthrough_field_persisted_when_env_set(self) -> None:
+        """When the user installs with ``CLAUDE_CONFIG_DIR=...``, that value must
+        survive into ``config.env`` so the service wrapper re-exports it on every
+        proxy restart. Without it the proxy falls back to ``~/.claude`` for
+        user-level skills/plugins lookup."""
+        values = _run_prompt(
+            {
+                "advanced": False,
+                "non_interactive": True,
+                "env": {
+                    "DD_API_KEY": "k",
+                    "DD_APP_KEY": "a",
+                    "DD_SERVICE": "s",
+                    "CLAUDE_CONFIG_DIR": "/work/claude",
+                },
+                "agents": [ClaudeInstaller()],
+            }
+        )
+        assert values["CLAUDE_CONFIG_DIR"] == "/work/claude"
 
     def test_env_value_wins_over_field_default_on_reinstall(self) -> None:
         """A previously stored / exported value must take precedence over a
@@ -886,6 +996,64 @@ class TestCli:
         assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" in env_content
         assert "https://upstream.example/v1" in env_content
 
+    def test_install_persists_claude_config_dir(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_detected: None,
+        staged_binary: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``CLAUDE_CONFIG_DIR`` set at install time must land in ``config.env``.
+
+        The proxy service runs detached from the install shell, so without
+        persistence the wrapper sources ``config.env``, finds no override, and
+        falls back to ``~/.claude`` when resolving user-level skills/plugins —
+        defeating the override for everything except hook writes.
+        """
+        override = tmp_home / "alt-claude"
+        override.mkdir()
+        # Stage settings.json under the override so the installer has a file to
+        # merge hooks into; ``claude_detected`` already short-circuits the
+        # binary lookup and version probe.
+        (override / "settings.json").write_text("{}")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert result.exit_code == 0, result.output + str(result.exception or "")
+
+        # Round-trip through load_config so we don't depend on shlex's quoting
+        # rules (paths with no metacharacters survive unquoted; tmp dirs vary).
+        from aiguard.storage import load_config
+
+        assert load_config().get("CLAUDE_CONFIG_DIR") == str(override)
+
+    def test_install_omits_claude_config_dir_when_unset(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without ``CLAUDE_CONFIG_DIR`` in the env, nothing should be written
+        for it — leaving ``paths.claude_config_dir()`` free to keep falling
+        back to ``~/.claude`` at runtime."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.setenv("DD_API_KEY", "k")
+        monkeypatch.setenv("DD_APP_KEY", "a")
+        monkeypatch.setenv("DD_SERVICE", "ai-guard")
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert result.exit_code == 0, result.output + str(result.exception or "")
+
+        assert "CLAUDE_CONFIG_DIR" not in paths.config_env_path().read_text()
+
     def test_uninstall_cleans_hooks_when_agent_no_longer_supported(
         self,
         tmp_home: Path,
@@ -1206,7 +1374,7 @@ class FakeAgent(AgentInstaller):
                 "DD_AI_GUARD_FAKE_UPSTREAM",
                 "Upstream Fake endpoint",
                 default=self._load().get(self.UPSTREAM_KEY) or "https://api.fake.example",
-                tier=2,
+                tier=Tier.ADVANCED,
             ),
         ]
 
