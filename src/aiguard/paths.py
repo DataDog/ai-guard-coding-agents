@@ -18,7 +18,7 @@ def home() -> Path:
 
 def config_home() -> Path:
     """``$XDG_CONFIG_HOME`` or ``~/.config``."""
-    return Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
+    return Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")).expanduser()
 
 
 def ai_guard_config_dir() -> Path:
@@ -33,9 +33,9 @@ def state_dir() -> Path:
     storage at a sandboxed tmpdir.
     """
     if explicit := os.environ.get("DD_AI_GUARD_HOME"):
-        return Path(explicit)
+        return Path(explicit).expanduser()
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    return Path(base) / "ai-guard"
+    return Path(base).expanduser() / "ai-guard"
 
 
 def config_env_path() -> Path:
@@ -90,8 +90,15 @@ def systemd_socket_path() -> Path:
 
 
 def claude_config_dir() -> Path:
-    if explicit := os.environ.get("CLAUDE_CONFIG_DIR"):
-        return Path(explicit).expanduser()
+    """Claude Code's config directory."""
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if not override:
+        # Lazy import: storage imports paths, so a module-level import cycles.
+        from aiguard import storage
+
+        override = storage.load_config().get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
     return home() / ".claude"
 
 

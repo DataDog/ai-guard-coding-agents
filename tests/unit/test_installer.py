@@ -43,6 +43,7 @@ from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.installer.installer import install, uninstall
 from aiguard.installer.service import wrapper
 from aiguard.installer.templates import render
+from aiguard.storage import save_config
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -164,6 +165,24 @@ class TestClaudeConfigDir:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/personal-claude")
         assert paths.claude_config_dir() == tmp_home / "personal-claude"
 
+    def test_falls_back_to_persisted_config(self, tmp_home: Path) -> None:
+        """A later install/uninstall from a shell that didn't re-export the
+        override must still resolve it from ``config.env``, not ``~/.claude``."""
+        override = tmp_home / "stored-claude"
+        save_config({"CLAUDE_CONFIG_DIR": str(override)})
+
+        assert paths.claude_config_dir() == override
+        assert paths.claude_settings_path() == override / "settings.json"
+
+    def test_live_env_wins_over_persisted_config(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        save_config({"CLAUDE_CONFIG_DIR": str(tmp_home / "stored-claude")})
+        live = tmp_home / "live-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(live))
+
+        assert paths.claude_config_dir() == live
+
     def test_install_writes_to_overridden_settings_path(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -178,6 +197,19 @@ class TestClaudeConfigDir:
         assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
         # The default ~/.claude/settings.json must stay untouched.
         assert not (tmp_home / ".claude" / "settings.json").exists()
+
+
+class TestConfigHome:
+    """``paths.config_home()`` honours ``$XDG_CONFIG_HOME``."""
+
+    def test_default_is_dot_config_under_home(self, tmp_home: Path) -> None:
+        assert paths.config_home() == tmp_home / ".config"
+
+    def test_env_var_expands_tilde(self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Shell profiles routinely set XDG_CONFIG_HOME=~/.config; a literal ``~``
+        # must not resolve relative to the cwd.
+        monkeypatch.setenv("XDG_CONFIG_HOME", "~/xdg-config")
+        assert paths.config_home() == tmp_home / "xdg-config"
 
 
 # =============================================================================
@@ -310,8 +342,6 @@ class TestClaudeInstaller:
         purely settings-driven and the agent module never has to remember the
         original value itself.
         """
-        from aiguard.storage import save_config
-
         settings = _make_claude_dir(tmp_home) / "settings.json"
         settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
         save_config({"DD_AI_GUARD_ANTHROPIC_UPSTREAM": "https://upstream.example/v1"})
