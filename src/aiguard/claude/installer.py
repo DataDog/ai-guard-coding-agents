@@ -1,6 +1,8 @@
 """Claude Code integration.
 
-Merges the ai-guard hook block into ``~/.claude/settings.json`` and points
+Merges the ai-guard hook block into Claude Code's ``settings.json``
+(``~/.claude/settings.json`` by default, or under ``$CLAUDE_CONFIG_DIR`` when
+set — see :func:`aiguard.paths.claude_config_dir`) and points
 ``env.ANTHROPIC_BASE_URL`` at the local proxy. Pre-existing
 ``ANTHROPIC_BASE_URL`` values are reported back so the installer can use them
 as the proxy's upstream and restore them on uninstall.
