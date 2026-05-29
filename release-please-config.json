@@ -21,7 +21,14 @@
   "packages": {
     ".": {
       "package-name": "ai-guard",
-      "extra-files": ["src/aiguard/__init__.py"]
+      "extra-files": [
+        "src/aiguard/__init__.py",
+        {
+          "path": "uv.lock",
+          "type": "toml",
+          "jsonpath": "$.package[?(@.name.value=='ai-guard')].version"
+        }
+      ]
     }
   }
 }
