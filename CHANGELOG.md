@@ -13,7 +13,6 @@
 
 * **install:** reattach stdin to /dev/tty before handing off to ai-guard ([#15](https://github.com/DataDog/ai-guard-coding-agents/issues/15)) ([4e5d84d](https://github.com/DataDog/ai-guard-coding-agents/commit/4e5d84dd3adac05cff1879270a01d69d537b0be0))
 * isolate subagent and main-session histories in proxy storage ([#17](https://github.com/DataDog/ai-guard-coding-agents/issues/17)) ([f2b224e](https://github.com/DataDog/ai-guard-coding-agents/commit/f2b224e573f5cafd480c2d2cfc4f56009e1b79ff))
-* keep subagent and main-session histories in separate storage slots ([f2b224e](https://github.com/DataDog/ai-guard-coding-agents/commit/f2b224e573f5cafd480c2d2cfc4f56009e1b79ff))
 
 ## [0.2.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.1.0...v0.2.0) (2026-05-26)
 
