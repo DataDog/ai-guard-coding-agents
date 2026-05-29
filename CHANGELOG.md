@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.2.0...v0.3.0) (2026-05-29)
+
+
+### 🚀 Features
+
+* honour CLAUDE_CONFIG_DIR for Claude Code config paths ([#20](https://github.com/DataDog/ai-guard-coding-agents/issues/20)) ([c0a972e](https://github.com/DataDog/ai-guard-coding-agents/commit/c0a972e15c7903ffe9f0e8f1aa71ecbb82ba750e))
+* tag ai_guard.usr.id with os-user@hostname instead of OAuth email ([#16](https://github.com/DataDog/ai-guard-coding-agents/issues/16)) ([ae83baa](https://github.com/DataDog/ai-guard-coding-agents/commit/ae83baa1f0fffddc1ac2638d8c2985df9a25f8e0))
+
+
+### 🐛 Bug Fixes
+
+* **install:** reattach stdin to /dev/tty before handing off to ai-guard ([#15](https://github.com/DataDog/ai-guard-coding-agents/issues/15)) ([4e5d84d](https://github.com/DataDog/ai-guard-coding-agents/commit/4e5d84dd3adac05cff1879270a01d69d537b0be0))
+* isolate subagent and main-session histories in proxy storage ([#17](https://github.com/DataDog/ai-guard-coding-agents/issues/17)) ([f2b224e](https://github.com/DataDog/ai-guard-coding-agents/commit/f2b224e573f5cafd480c2d2cfc4f56009e1b79ff))
+* keep subagent and main-session histories in separate storage slots ([f2b224e](https://github.com/DataDog/ai-guard-coding-agents/commit/f2b224e573f5cafd480c2d2cfc4f56009e1b79ff))
+
 ## [0.2.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.1.0...v0.2.0) (2026-05-26)
 
 
