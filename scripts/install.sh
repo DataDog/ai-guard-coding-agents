@@ -14,8 +14,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --uninstall --yes
 #
 # Environment overrides:
-#   AI_GUARD_VERSION       release tag to install (default: the version baked
-#                          in below, kept in sync by release-please)
+#   AI_GUARD_VERSION       version to install, without the leading "v" (default:
+#                          the version baked in below, kept in sync by
+#                          release-please)
 #   AI_GUARD_BIN_DIR       symlink location          (default: ~/.local/bin)
 #   AI_GUARD_BUNDLE_DIR    bundle extract root       (default: ~/.local/share/ai-guard)
 #   AI_GUARD_BUNDLE        path to a built ai-guard tarball (same .tar.gz
@@ -28,8 +29,8 @@ set -eu
 REPO="DataDog/ai-guard-coding-agents"
 BIN_DIR="${AI_GUARD_BIN_DIR:-$HOME/.local/bin}"
 BUNDLE_DIR="${AI_GUARD_BUNDLE_DIR:-$HOME/.local/share/ai-guard}"
-DEFAULT_VERSION="v0.3.0"  # x-release-please-version
-VERSION="${AI_GUARD_VERSION:-$DEFAULT_VERSION}"
+DEFAULT_VERSION="0.3.0"  # x-release-please-version
+VERSION="v${AI_GUARD_VERSION:-$DEFAULT_VERSION}"
 LOCAL_BUNDLE="${AI_GUARD_BUNDLE:-}"
 
 # --- ui primitives -----------------------------------------------------------
