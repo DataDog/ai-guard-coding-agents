@@ -28,7 +28,8 @@ system-wide changes.
 ### Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/scripts/install.sh -o install.sh
+sh install.sh
 ```
 
 Windows support is coming via `install.ps1`.

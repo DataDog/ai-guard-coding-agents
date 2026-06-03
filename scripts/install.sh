@@ -14,7 +14,8 @@
 #   curl -fsSL .../install.sh | sh -s -- --uninstall --yes
 #
 # Environment overrides:
-#   AI_GUARD_VERSION       pin a specific release tag (default: latest)
+#   AI_GUARD_VERSION       release tag to install (default: the version baked
+#                          in below, kept in sync by release-please)
 #   AI_GUARD_BIN_DIR       symlink location          (default: ~/.local/bin)
 #   AI_GUARD_BUNDLE_DIR    bundle extract root       (default: ~/.local/share/ai-guard)
 #   AI_GUARD_BUNDLE        path to a built ai-guard tarball (same .tar.gz
@@ -27,7 +28,8 @@ set -eu
 REPO="DataDog/ai-guard-coding-agents"
 BIN_DIR="${AI_GUARD_BIN_DIR:-$HOME/.local/bin}"
 BUNDLE_DIR="${AI_GUARD_BUNDLE_DIR:-$HOME/.local/share/ai-guard}"
-VERSION="${AI_GUARD_VERSION:-latest}"
+DEFAULT_VERSION="v0.3.0"  # x-release-please-version
+VERSION="${AI_GUARD_VERSION:-$DEFAULT_VERSION}"
 LOCAL_BUNDLE="${AI_GUARD_BUNDLE:-}"
 
 # --- ui primitives -----------------------------------------------------------
@@ -250,20 +252,8 @@ if [ -n "$LOCAL_BUNDLE" ]; then
     handoff "$@"
 fi
 
-# --- version resolution ------------------------------------------------------
-section "Resolve release version"
-
-if [ "$VERSION" = "latest" ]; then
-    API_URL="https://api.github.com/repos/${REPO}/releases/latest"
-    case "$HTTP_TOOL" in
-        curl) RESPONSE=$(curl -fsSL "$API_URL") ;;
-        wget) RESPONSE=$(wget -qO- "$API_URL") ;;
-    esac
-    VERSION=$(printf '%s\n' "$RESPONSE" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
-    if [ -z "$VERSION" ]; then
-        die "could not determine latest release; try AI_GUARD_VERSION=vX.Y.Z"
-    fi
-fi
+# --- release version ---------------------------------------------------------
+section "Release version"
 ok "$VERSION"
 
 # --- download ----------------------------------------------------------------
