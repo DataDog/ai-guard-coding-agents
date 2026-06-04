@@ -69,12 +69,12 @@ class ClaudeProxy(ProxyHandler):
             or "application/json" not in request.content_type.lower()
         ):
             return "", "", []
-        session_id, agent_id = _fetch_session_keys(request)
         try:
             data = json.loads(body)
         except (json.JSONDecodeError, ValueError):
             logger.error("failed to parse request body", exc_info=True)
             return "", "", []
+        session_id, agent_id = _fetch_session_keys(request, data)
         return session_id, agent_id, _parse_request_body(data)
 
     def parse_response(self, response: aiohttp.ClientResponse, body: bytes) -> list[Message]:
@@ -517,18 +517,42 @@ def _parse_request_body(data: dict) -> list[Message]:
     return result
 
 
-def _fetch_session_keys(request: aiohttp.web.Request) -> tuple[str, str]:
-    """Extract ``(session_id, agent_id)`` from the Claude Code request headers.
+def _fetch_session_keys(request: aiohttp.web.Request, data: dict[str, Any]) -> tuple[str, str]:
+    """Extract ``(session_id, agent_id)`` for a Claude Code request.
 
     Claude Code stamps ``X-Claude-Code-Session-Id`` on every Anthropic call and
     adds ``X-Claude-Code-Agent-Id`` for sidechain (Task-spawned subagent)
     traffic, so the proxy can route writes to a per-subagent storage slot
-    instead of clobbering the parent session's history. Either component falls
-    back to ``""`` when the header is missing.
+    instead of clobbering the parent session's history.
+
+    When the session header is absent we fall back to the session id embedded
+    in ``metadata.user_id`` so history is still keyed to the right session. The
+    subagent id has no body-level equivalent, so it stays ``""`` in that case —
+    sidechain calls then share the parent session's slot, but the session is
+    recovered. Either component falls back to ``""`` when unavailable.
     """
-    sid = request.headers.get("X-Claude-Code-Session-Id", "")
+    sid = request.headers.get("X-Claude-Code-Session-Id", "") or _fetch_session_id(data)
     aid = request.headers.get("X-Claude-Code-Agent-Id", "")
     return sid, aid
+
+
+def _fetch_session_id(data: dict[str, Any]) -> str:
+    """Extract the Claude session id from an Anthropic Messages request body.
+
+    Claude Code embeds session metadata as a JSON-encoded string in
+    ``metadata.user_id``. Returns ``""`` when missing or malformed.
+    """
+    raw_user_id = (data.get("metadata") or {}).get("user_id", "")
+    if not isinstance(raw_user_id, str) or not raw_user_id:
+        return ""
+    try:
+        parsed = json.loads(raw_user_id)
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    sid = parsed.get("session_id", "")
+    return sid if isinstance(sid, str) else ""
 
 
 def _parse_body(content_type: str, body: bytes) -> list[Message]:
