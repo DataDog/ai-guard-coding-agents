@@ -6,6 +6,16 @@
 # This product includes software developed at Datadog (https://www.datadoghq.com/).
 # Copyright 2026-Present Datadog, Inc.
 
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+
+# keyring discovers its keychain backends through entry points declared in its
+# dist metadata. PyInstaller doesn't ship that metadata or the backend
+# submodules by default, so without this the frozen binary finds no backend and
+# silently falls back to config.env. copy_metadata keeps the entry points;
+# collect_submodules pulls in the per-OS backend modules they point at.
+_keyring_datas = copy_metadata("keyring")
+_keyring_hiddenimports = collect_submodules("keyring")
+
 a = Analysis(
     ["src/aiguard/__main__.py"],
     pathex=["src"],
@@ -13,6 +23,7 @@ a = Analysis(
     datas=[
         # Service-registration templates loaded via importlib.resources.
         ("src/aiguard/installer/templates/*.in", "aiguard/installer/templates"),
+        *_keyring_datas,
     ],
     hiddenimports=[
         "aiguard",
@@ -38,6 +49,9 @@ a = Analysis(
         # the package itself must be importable for the lookup to find the
         # bundled .in files declared in `datas`.
         "aiguard.installer.templates",
+        # keyring backends are resolved at runtime via entry points, so the
+        # static analyser can't see them; collect_submodules above lists them.
+        *_keyring_hiddenimports,
         "rich",
         "rich.console",
         "rich.panel",

@@ -14,15 +14,22 @@ import os
 import socket
 import time
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import aiohttp
 import aiohttp.web
 import click
-from ddtrace.appsec.ai_guard import Message
 
 from aiguard import utils
 from aiguard.constants import AIGuardConstants
 from aiguard.storage import save_messages
+
+if TYPE_CHECKING:
+    # Annotation-only (``from __future__ import annotations`` above). Kept off
+    # the runtime import path so importing this module doesn't pull in ddtrace
+    # — the proxy command imports ddtrace lazily, after loading DD_API_KEY from
+    # the keychain and scrubbing OTEL_ vars.
+    from ddtrace.appsec.ai_guard import Message
 
 logger = logging.getLogger("ai_guard")
 
@@ -514,14 +521,28 @@ def proxy(host: str, port: int, anthropic_upstream: str, block: bool, idle_timeo
       ai-guard proxy --host 0.0.0.0 --anthropic-upstream https://api.anthropic.com
     """
 
+    from aiguard import keychain
+
+    keychain.load_into_env()
+
+    for _key in [k for k in os.environ if k.startswith("OTEL_")]:
+        del os.environ[_key]
+
+    from ddtrace import tracer
+
     from aiguard.claude.proxy import ClaudeProxy
 
     handlers = [ClaudeProxy(anthropic_upstream, block)]
-    asyncio.run(
-        Proxy(
-            host=host,
-            port=port,
-            handlers=handlers,
-            idle_timeout=float(idle_timeout),
-        ).run()
-    )
+    try:
+        asyncio.run(
+            Proxy(
+                host=host,
+                port=port,
+                handlers=handlers,
+                idle_timeout=float(idle_timeout),
+            ).run()
+        )
+    finally:
+        # The proxy is the only command that emits spans; flush them before the
+        # process exits (matters on the idle-timeout shutdown path).
+        tracer.shutdown()
