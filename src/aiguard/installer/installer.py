@@ -10,7 +10,7 @@ import click
 from rich.console import Console
 from rich.text import Text
 
-from aiguard import paths, utils
+from aiguard import keychain, paths, utils
 from aiguard.claude.installer import ClaudeInstaller
 from aiguard.constants import AIGuardConstants
 from aiguard.installer import ui
@@ -259,10 +259,15 @@ def _summary(
     c: Console,
     *,
     agent_updates: dict[str, list[Path]],
+    keychained: list[str],
 ) -> None:
+    secrets_loc = (
+        f"OS keychain ({', '.join(keychained)})" if keychained else str(paths.config_env_path())
+    )
     rows: list[tuple[str, str]] = [
         ("Binary", str(paths.binary_path())),
         ("Config", str(paths.config_env_path())),
+        ("Keys", secrets_loc),
         ("App log", str(paths.log_file_path())),
         ("Service", _service_path()),
     ]
@@ -351,7 +356,14 @@ def install(
     stored = load_config()
     if stored:
         ui.action(c, f"reusing {len(stored)} value(s) from {paths.config_env_path()}")
-    merged_env = {**stored, **os.environ}
+    # Secrets persisted to the keychain on a previous install are no longer in
+    # config.env, so fold them back in as prompt defaults — otherwise a
+    # re-install would treat DD_API_KEY / DD_APP_KEY as missing. Real env vars
+    # still win so the user can rotate a key by re-exporting it.
+    keychain_secrets = keychain.load_secrets()
+    if keychain_secrets:
+        ui.action(c, f"reusing {len(keychain_secrets)} secret(s) from the OS keychain")
+    merged_env = {**stored, **keychain_secrets, **os.environ}
     try:
         values = _collect_fields(
             advanced=advanced,
@@ -374,12 +386,24 @@ def install(
 
     # ── Write config ──────────────────────────────────────────────────────────
     ui.section(c, "Write configuration")
-    save_config(values)
+    # Route DD_API_KEY / DD_APP_KEY to the OS keychain when one is reachable so
+    # they never sit in plaintext config.env. keychain.store() returns False on
+    # a host with no keychain (headless Linux); those keys stay in the file.
+    # Rewriting config.env without the keychained keys also migrates installs
+    # that previously stored them in the file.
+    secret_values = [k for k in keychain.SECRET_KEYS if values.get(k)]
+    keychained = [k for k in secret_values if keychain.store(k, values[k])]
+    config_values = {k: v for k, v in values.items() if k not in keychained}
+    save_config(config_values)
     body = Text()
     body.append(str(paths.config_env_path()))
     body.append("  ")
     body.append("(mode 0600)", style="dim")
     ui.ok(c, body)
+    if keychained:
+        ui.ok(c, f"{', '.join(keychained)} stored in the OS keychain")
+    elif secret_values:
+        ui.warn(c, "no OS keychain available — API & app keys saved to config.env")
 
     host = values.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
     port = int(values.get("DD_AI_GUARD_PROXY_PORT", AIGuardConstants.PROXY_PORT_DEFAULT))
@@ -423,7 +447,7 @@ def install(
     ui.ok(c, body)
 
     _path_warning(c)
-    _summary(c, agent_updates=agent_updates)
+    _summary(c, agent_updates=agent_updates, keychained=keychained)
 
 
 # ── uninstall ──────────────────────────────────────────────────────────────────
@@ -441,6 +465,7 @@ def uninstall(yes: bool, no_color: bool) -> None:
             "Stop and remove the AI Guard service",
             "Remove AI Guard from detected agent configs",
             f"Delete {paths.config_env_path()} and session history",
+            "Remove the API & app keys from the OS keychain",
             "Delete the binary at ~/.local/bin/ai-guard",
             f"Keep {paths.log_file_path()}* (proxy logs)",
         ]
@@ -480,6 +505,10 @@ def uninstall(yes: bool, no_color: bool) -> None:
     ui.section(c, "Result")
     _purge_state_dir()
     ui.ok(c, "config + session history removed")
+
+    for key in keychain.SECRET_KEYS:
+        keychain.delete(key)
+    ui.ok(c, "API & app keys removed from the OS keychain")
 
     try:
         paths.wrapper_path().unlink()

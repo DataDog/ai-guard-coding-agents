@@ -27,12 +27,17 @@ import re
 import shlex
 import shutil
 from pathlib import Path
-
-from ddtrace.appsec.ai_guard import Message
+from typing import TYPE_CHECKING
 
 from aiguard import paths
 from aiguard.paths import state_dir
 from aiguard.utils import atomic_write
+
+if TYPE_CHECKING:
+    # Annotation-only (``from __future__ import annotations`` above). Kept off
+    # the runtime import path so importing storage (e.g. via the installer)
+    # doesn't pull in ddtrace before the proxy command can load DD_API_KEY.
+    from ddtrace.appsec.ai_guard import Message
 
 logger = logging.getLogger("ai_guard")
 
