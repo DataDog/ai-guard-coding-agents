@@ -43,6 +43,7 @@ from aiguard.claude.proxy import (
     _parse_anthropic_message,
     _parse_request_body,
     _parse_sse_body,
+    _privacy_mode,
 )
 from aiguard.constants import AIGuardConstants
 
@@ -51,6 +52,28 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 def _proxy() -> ClaudeProxy:
     return ClaudeProxy(upstream="http://upstream.invalid", blocking=True)
+
+
+class TestPrivacyMode:
+    """``_privacy_mode`` resolves DD_AI_GUARD_PRIVACY_MODE for the client."""
+
+    def test_defaults_to_coding_agent_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(AIGuardConstants.PRIVACY_MODE_ENV, raising=False)
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
+
+    def test_honours_default_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "DEFAULT")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
+
+    def test_is_case_insensitive_and_trims(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "  default ")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
+
+    def test_unknown_value_falls_back_to_coding_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "bogus")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
 
 
 # ── claude/proxy.py — ClaudeProxy public surface ──────────────────────────────

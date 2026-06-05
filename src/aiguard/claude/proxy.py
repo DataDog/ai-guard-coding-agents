@@ -48,7 +48,10 @@ class ClaudeProxy(ProxyHandler):
     def __init__(self, upstream: str, blocking: bool) -> None:
         self._upstream = upstream
         self._blocking = blocking
-        self._ai_guard = new_ai_guard_client(meta={"coding_agent": AIGuardConstants.CLAUDE_CODE})
+        self._ai_guard = new_ai_guard_client(
+            mode=_privacy_mode(),
+            meta={"coding_agent": AIGuardConstants.CLAUDE_CODE},
+        )
 
     def agent(self) -> str:
         return "claude"
@@ -214,6 +217,20 @@ class ClaudeProxy(ProxyHandler):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _privacy_mode() -> str:
+    """Resolve ``DD_AI_GUARD_PRIVACY_MODE`` for the AI Guard client ``mode``.
+
+    CODING_AGENT (our default) surfaces full message contents in the UI only for
+    failed evaluations — on an allowed call the tool arguments and results are
+    stripped. DEFAULT surfaces full contents for every evaluation. Unknown
+    values fall back to CODING_AGENT.
+    """
+    value = (os.environ.get(AIGuardConstants.PRIVACY_MODE_ENV) or "").strip().upper()
+    if value == AIGuardConstants.PRIVACY_MODE_DEFAULT:
+        return AIGuardConstants.PRIVACY_MODE_DEFAULT
+    return AIGuardConstants.PRIVACY_MODE_CODING_AGENT
 
 
 # Sites where the UI lives at ``app.<site>``. Regional sites
