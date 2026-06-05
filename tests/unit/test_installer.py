@@ -970,6 +970,106 @@ class TestCli:
         assert paths.systemd_unit_path().exists()
         assert paths.wrapper_path().exists()
 
+    def test_install_stores_secrets_in_keychain_when_available(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        fake_keychain: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With a keychain present, DD_API_KEY / DD_APP_KEY go to the keychain
+        and never touch config.env; the rest of the config still lands in the file."""
+        monkeypatch.setenv("DD_API_KEY", "kc-api")
+        monkeypatch.setenv("DD_APP_KEY", "kc-app")
+        monkeypatch.setenv("DD_SERVICE", "test-service")
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert result.exit_code == 0, result.output + str(result.exception or "")
+
+        assert fake_keychain == {"DD_API_KEY": "kc-api", "DD_APP_KEY": "kc-app"}
+
+        content = paths.config_env_path().read_text()
+        assert "DD_API_KEY" not in content
+        assert "DD_APP_KEY" not in content
+        # Non-secret config still persisted to the file.
+        assert "DD_SERVICE=test-service" in content
+
+    def test_install_migrates_secrets_from_config_to_keychain(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        fake_keychain: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pre-existing config.env with secrets (an upgrade from the
+        file-only world) must have them lifted into the keychain and stripped
+        from the file on the next install."""
+        from aiguard.storage import save_config
+
+        save_config({"DD_API_KEY": "old-api", "DD_APP_KEY": "old-app", "DD_SERVICE": "svc"})
+        # No DD_* in the env: values come from the stored config.env.
+        for key in ("DD_API_KEY", "DD_APP_KEY", "DD_SERVICE"):
+            monkeypatch.delenv(key, raising=False)
+
+        result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert result.exit_code == 0, result.output + str(result.exception or "")
+
+        assert fake_keychain == {"DD_API_KEY": "old-api", "DD_APP_KEY": "old-app"}
+        content = paths.config_env_path().read_text()
+        assert "DD_API_KEY" not in content
+        assert "DD_APP_KEY" not in content
+
+    def test_reinstall_reuses_keychain_secrets_without_env(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        fake_keychain: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Re-running --non-interactive install with no env vars must succeed by
+        reading the secrets back out of the keychain (they're not in config.env)."""
+        monkeypatch.setenv("DD_API_KEY", "kc-api")
+        monkeypatch.setenv("DD_APP_KEY", "kc-app")
+        monkeypatch.setenv("DD_SERVICE", "svc")
+        first = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert first.exit_code == 0, first.output + str(first.exception or "")
+
+        monkeypatch.delenv("DD_API_KEY")
+        monkeypatch.delenv("DD_APP_KEY")
+        second = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert second.exit_code == 0, second.output + str(second.exception or "")
+        assert fake_keychain == {"DD_API_KEY": "kc-api", "DD_APP_KEY": "kc-app"}
+
+    def test_uninstall_deletes_keychain_secrets(
+        self,
+        tmp_home: Path,
+        stub_platform: None,
+        wait_ready_ok: None,
+        claude_present: Path,
+        staged_binary: Path,
+        fake_keychain: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DD_API_KEY", "kc-api")
+        monkeypatch.setenv("DD_APP_KEY", "kc-app")
+        monkeypatch.setenv("DD_SERVICE", "svc")
+        inst = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
+        assert inst.exit_code == 0, inst.output + str(inst.exception or "")
+        assert fake_keychain  # secrets are in the keychain
+
+        uninst = CliRunner().invoke(uninstall, ["--yes", "--no-color"])
+        assert uninst.exit_code == 0, uninst.output + str(uninst.exception or "")
+        assert fake_keychain == {}
+
     def test_install_detects_and_chains_upstream(
         self,
         tmp_home: Path,

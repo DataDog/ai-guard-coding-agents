@@ -88,6 +88,16 @@ ai-guard uninstall
 Stops and unregisters the service, restores the original coding agent config, and removes all AI Guard artifacts.
 `~/.local/state/ai-guard/ai-guard.log*` is preserved as a forensic trail.
 
+## Privacy notice
+
+`DD_AI_GUARD_PRIVACY_MODE` controls how much of the coding trajectory is surfaced in the Datadog AI Guard UI. 
+
+| Value          | Behavior                                                                                                  |
+|----------------|-----------------------------------------------------------------------------------------------------------|
+| `CODING_AGENT` | *Default*. Message contents are shown only for denied evaluations; on allowed calls results are stripped. |
+| `DEFAULT`      | Full conversation and message contents are shown for every evaluation.                                    |
+
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and the PR workflow. For an in-depth tour of the codebase,

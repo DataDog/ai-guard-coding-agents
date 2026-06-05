@@ -176,7 +176,7 @@ def fake_ai_guard(monkeypatch: pytest.MonkeyPatch) -> FakeAIGuardClient:
     fake = FakeAIGuardClient()
     monkeypatch.setattr(
         "aiguard.claude.proxy.new_ai_guard_client",
-        lambda meta=None: fake,
+        lambda mode=None, meta=None: fake,
         raising=False,
     )
     return fake
@@ -264,6 +264,52 @@ async def proxy_client(
 
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default to "no OS keychain" so secret handling is deterministic.
+
+    The host running the suite may or may not have a working keychain backend;
+    forcing :func:`aiguard.keychain._keyring` to report none here means the
+    file-fallback path (secrets in config.env) is exercised consistently, while
+    still running the real public functions. Tests that want the keychain path
+    take the :func:`fake_keychain` fixture, which re-patches this afterwards.
+    """
+    from aiguard import keychain
+
+    monkeypatch.setattr(keychain, "_keyring", lambda: None)
+
+
+class _FakeKeyring:
+    """Minimal in-memory keyring backend (``set/get/delete_password``)."""
+
+    def __init__(self, vault: dict[str, str]) -> None:
+        self._vault = vault
+
+    def set_password(self, service: str, key: str, value: str) -> None:
+        self._vault[key] = value
+
+    def get_password(self, service: str, key: str) -> str | None:
+        return self._vault.get(key)
+
+    def delete_password(self, service: str, key: str) -> None:
+        self._vault.pop(key, None)
+
+
+@pytest.fixture
+def fake_keychain(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Back :mod:`aiguard.keychain` with an in-memory store, keyed by env-var name.
+
+    Returns the backing dict so tests can assert what landed in the keychain
+    (and seed it to simulate a prior install). The real ``store``/``load``/
+    ``delete`` logic runs on top of the fake backend.
+    """
+    from aiguard import keychain
+
+    vault: dict[str, str] = {}
+    monkeypatch.setattr(keychain, "_keyring", lambda: _FakeKeyring(vault))
+    return vault
 
 
 @pytest.fixture(autouse=True)

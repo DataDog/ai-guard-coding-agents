@@ -43,6 +43,7 @@ from aiguard.claude.proxy import (
     _parse_anthropic_message,
     _parse_request_body,
     _parse_sse_body,
+    _privacy_mode,
 )
 from aiguard.constants import AIGuardConstants
 
@@ -51,6 +52,28 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 def _proxy() -> ClaudeProxy:
     return ClaudeProxy(upstream="http://upstream.invalid", blocking=True)
+
+
+class TestPrivacyMode:
+    """``_privacy_mode`` resolves DD_AI_GUARD_PRIVACY_MODE for the client."""
+
+    def test_defaults_to_coding_agent_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(AIGuardConstants.PRIVACY_MODE_ENV, raising=False)
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
+
+    def test_honours_default_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "DEFAULT")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
+
+    def test_is_case_insensitive_and_trims(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "  default ")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
+
+    def test_unknown_value_falls_back_to_coding_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "bogus")
+        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
 
 
 # ── claude/proxy.py — ClaudeProxy public surface ──────────────────────────────
@@ -433,15 +456,23 @@ class TestSessionKeysParser:
     Claude Code request headers. Subagent calls share the parent's session id
     but add an ``X-Claude-Code-Agent-Id`` header so the proxy can route their
     history to a per-agent storage slot.
+
+    When the session header is absent the session id falls back to the
+    JSON-encoded ``metadata.user_id`` in the request body. The subagent id has
+    no body equivalent, so it stays empty in that case.
     """
 
     @staticmethod
     def _request(**headers: str) -> Any:
         return make_mocked_request("POST", "/v1/messages", headers=headers)
 
+    @staticmethod
+    def _meta(session_id: str) -> dict[str, Any]:
+        return {"metadata": {"user_id": json.dumps({"session_id": session_id})}}
+
     def test_session_only_header(self) -> None:
         req = self._request(**{"X-Claude-Code-Session-Id": "sess-abc"})
-        assert _fetch_session_keys(req) == ("sess-abc", "")
+        assert _fetch_session_keys(req, {}) == ("sess-abc", "")
 
     def test_subagent_call_returns_session_and_agent_id(self) -> None:
         req = self._request(
@@ -450,16 +481,16 @@ class TestSessionKeysParser:
                 "X-Claude-Code-Agent-Id": "a14cb3bf47e9a6e48",
             }
         )
-        assert _fetch_session_keys(req) == ("sess-abc", "a14cb3bf47e9a6e48")
+        assert _fetch_session_keys(req, {}) == ("sess-abc", "a14cb3bf47e9a6e48")
 
     def test_returns_empty_when_no_headers(self) -> None:
         req = self._request()
-        assert _fetch_session_keys(req) == ("", "")
+        assert _fetch_session_keys(req, {}) == ("", "")
 
     def test_returns_empty_when_only_agent_id_header_present(self) -> None:
         """An agent_id without a session_id can't be routed; surface as empty."""
         req = self._request(**{"X-Claude-Code-Agent-Id": "a7"})
-        sid, _ = _fetch_session_keys(req)
+        sid, _ = _fetch_session_keys(req, {})
         assert sid == ""
 
     def test_header_lookup_is_case_insensitive(self) -> None:
@@ -470,7 +501,25 @@ class TestSessionKeysParser:
                 "x-claude-code-agent-id": "a7",
             }
         )
-        assert _fetch_session_keys(req) == ("sess-abc", "a7")
+        assert _fetch_session_keys(req, {}) == ("sess-abc", "a7")
+
+    def test_session_falls_back_to_metadata_when_header_absent(self) -> None:
+        """No session header: recover the session id from metadata.user_id."""
+        req = self._request()
+        assert _fetch_session_keys(req, self._meta("sess-meta")) == ("sess-meta", "")
+
+    def test_header_takes_precedence_over_metadata(self) -> None:
+        req = self._request(**{"X-Claude-Code-Session-Id": "sess-hdr"})
+        assert _fetch_session_keys(req, self._meta("sess-meta")) == ("sess-hdr", "")
+
+    def test_metadata_fallback_keeps_agent_id_from_header(self) -> None:
+        """Subagent id has no body equivalent, but the header still applies."""
+        req = self._request(**{"X-Claude-Code-Agent-Id": "a7"})
+        assert _fetch_session_keys(req, self._meta("sess-meta")) == ("sess-meta", "a7")
+
+    def test_malformed_metadata_yields_empty_session(self) -> None:
+        req = self._request()
+        assert _fetch_session_keys(req, {"metadata": {"user_id": "not-json"}}) == ("", "")
 
 
 class TestSSEResponseParser:
