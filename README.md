@@ -4,6 +4,12 @@
 ![Codex CLI](https://img.shields.io/badge/Codex_CLI-roadmap-lightgrey?style=flat-square&logo=https%3A%2F%2Fraw.githubusercontent.com%2FDataDog%2Fai-guard-coding-agents%2Fmain%2Fdocs%2Fimages%2Fopenai.svg)
 ![Cursor](https://img.shields.io/badge/Cursor-roadmap-lightgrey?style=flat-square&logo=cursor&logoColor=white)
 
+> [!IMPORTANT]
+> **Experimental.** This is an early experiment to validate our approach to securing coding agents; not a
+> production-ready product, and not meant for dogfooding at scale. The deployment method here does not reflect
+> the final product, which will use a more secure approach with full data-privacy guarantees.
+> **Do not use this project in data-sensitive coding sessions**.
+
 A CLI that runs AI coding agent actions through [Datadog AI Guard](https://docs.datadoghq.com/security/ai_guard/) before
 they are executed.
 
