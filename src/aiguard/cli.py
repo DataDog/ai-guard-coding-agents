@@ -9,30 +9,20 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 
-from aiguard import paths
+from aiguard import __version__, paths
 from aiguard.hooks.hooks import hook
-
-for _key in [k for k in os.environ if k.startswith("OTEL_")]:
-    del os.environ[_key]
+from aiguard.installer.installer import install, uninstall
+from aiguard.proxy.server import proxy
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "aiguard"
-
-# Module-level imports below run AFTER the OTEL_ env cleanup and sys.path
-# patch above — that's intentional, so E402 is silenced for these lines.
-from ddtrace import tracer  # noqa: E402
-
-from aiguard import __version__  # noqa: E402
-from aiguard.installer.installer import install, uninstall  # noqa: E402
-from aiguard.proxy.server import proxy  # noqa: E402
 
 logger = logging.getLogger("ai_guard")
 
@@ -66,12 +56,6 @@ def _setup_logging(log_file: str | None, log_level: str) -> None:
 class _Group(click.Group):
     def format_usage(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         formatter.write_usage(ctx.command_path, "AGENT HOOK [OPTIONS]")
-
-    def invoke(self, ctx: click.Context) -> object:
-        try:
-            return super().invoke(ctx)
-        finally:
-            tracer.shutdown()
 
 
 @click.group(cls=_Group)

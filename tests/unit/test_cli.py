@@ -36,6 +36,29 @@ from aiguard.hooks.hooks import hook
 # ── ai-guard (top-level) ──────────────────────────────────────────────────────
 
 
+class TestDdtraceDeferred:
+    """Importing the CLI must not pull in ddtrace.
+
+    The proxy command loads DD_API_KEY from the keychain and scrubs OTEL_ vars
+    *before* importing ddtrace, which reads both at import time. That only works
+    if nothing on the ``aiguard.cli`` import path imports ddtrace eagerly — so
+    storage/server keep ``Message`` under ``TYPE_CHECKING`` and the heavy
+    ddtrace imports live inside the proxy command. Run in a clean subprocess
+    since the test process already has ddtrace loaded via other modules.
+    """
+
+    def test_importing_cli_does_not_import_ddtrace(self) -> None:
+        import subprocess
+        import sys
+
+        code = "import aiguard.cli, sys; sys.exit('ddtrace' in sys.modules)"
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert result.returncode == 0, (
+            "ddtrace was imported just by importing aiguard.cli — the proxy's "
+            "keychain/OTEL setup would then run too late.\n" + result.stderr
+        )
+
+
 class TestMainCli:
     def test_version(self) -> None:
         result = CliRunner().invoke(main, ["--version"])
