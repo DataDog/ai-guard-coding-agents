@@ -29,7 +29,7 @@ set -eu
 REPO="DataDog/ai-guard-coding-agents"
 BIN_DIR="${AI_GUARD_BIN_DIR:-$HOME/.local/bin}"
 BUNDLE_DIR="${AI_GUARD_BUNDLE_DIR:-$HOME/.local/share/ai-guard}"
-DEFAULT_VERSION="0.3.0"  # x-release-please-version
+DEFAULT_VERSION="0.4.0"  # x-release-please-version
 VERSION="v${AI_GUARD_VERSION:-$DEFAULT_VERSION}"
 LOCAL_BUNDLE="${AI_GUARD_BUNDLE:-}"
 

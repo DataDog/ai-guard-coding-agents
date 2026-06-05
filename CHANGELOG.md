@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.3.0...v0.4.0) (2026-06-05)
+
+
+### 🚀 Features
+
+* add DD_AI_GUARD_PRIVACY_MODE to control UI content surfacing ([#28](https://github.com/DataDog/ai-guard-coding-agents/issues/28)) ([d2a4810](https://github.com/DataDog/ai-guard-coding-agents/commit/d2a48103e38eeab7d0617b51eaa6ffe285799811))
+* store DD_API_KEY/DD_APP_KEY in the OS keychain ([#25](https://github.com/DataDog/ai-guard-coding-agents/issues/25)) ([5ac21c5](https://github.com/DataDog/ai-guard-coding-agents/commit/5ac21c5a0c2dd90301e6e91f7829ca0cded6f17a))
+
+
+### 🐛 Bug Fixes
+
+* recover session id from request metadata when header is absent ([#26](https://github.com/DataDog/ai-guard-coding-agents/issues/26)) ([de8d5d3](https://github.com/DataDog/ai-guard-coding-agents/commit/de8d5d3cba8457de9708a771a222f0410a14cb8c))
+
 ## [0.3.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.2.0...v0.3.0) (2026-05-29)
 
 
