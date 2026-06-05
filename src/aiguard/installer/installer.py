@@ -78,6 +78,13 @@ FIELDS: list[Field] = [
         default="True",
         tier=Tier.SILENT,
     ),
+    Field(
+        "DD_AI_GUARD_PRIVACY_MODE",
+        "Privacy mode (CODING_AGENT shows message contents in the UI only for "
+        "blocked evaluations; DEFAULT shows them for every evaluation)",
+        default=AIGuardConstants.PRIVACY_MODE_CODING_AGENT,
+        tier=Tier.SILENT,
+    ),
 ]
 
 

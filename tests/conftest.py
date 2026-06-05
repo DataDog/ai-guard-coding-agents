@@ -176,7 +176,7 @@ def fake_ai_guard(monkeypatch: pytest.MonkeyPatch) -> FakeAIGuardClient:
     fake = FakeAIGuardClient()
     monkeypatch.setattr(
         "aiguard.claude.proxy.new_ai_guard_client",
-        lambda meta=None: fake,
+        lambda mode=None, meta=None: fake,
         raising=False,
     )
     return fake

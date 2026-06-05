@@ -29,6 +29,15 @@ class AIGuardConstants(object):
     CLAUDE_CODE = "claude_code"
     CLAUDE_MIN_VERSION = "2.1.139"
 
+    # Privacy mode — forwarded to the AI Guard client as its ``mode`` argument,
+    # controlling what message content is surfaced in the UI. CODING_AGENT (our
+    # default) only keeps full contents for failed (blocked) evaluations and
+    # strips tool arguments/results when a call is allowed; DEFAULT keeps full
+    # contents for every evaluation.
+    PRIVACY_MODE_ENV = "DD_AI_GUARD_PRIVACY_MODE"
+    PRIVACY_MODE_CODING_AGENT = "CODING_AGENT"
+    PRIVACY_MODE_DEFAULT = "DEFAULT"
+
     # Installer services
     LAUNCHD_LABEL = "com.datadoghq.ai-guard"
     SYSTEMD_UNIT_NAME = "ai-guard.service"

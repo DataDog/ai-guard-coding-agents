@@ -440,8 +440,8 @@ wheels = [
 
 [[package]]
 name = "ddtrace"
-version = "4.8.0rc5"
-source = { git = "https://github.com/DataDog/dd-trace-py?rev=malvarez%2Fai-guard-claude-code-hooks#28b6a7f71af6641d3697b68390f6337f27a9ffa6" }
+version = "4.11.0rc1"
+source = { git = "https://github.com/DataDog/dd-trace-py?rev=malvarez%2Fai-guard-claude-code-hooks#0ba4fad5e9bff344d4ec72df46a1f58c140ed405" }
 dependencies = [
     { name = "bytecode" },
     { name = "envier" },
