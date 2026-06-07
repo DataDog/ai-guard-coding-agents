@@ -11,6 +11,7 @@ they find it (restoring any upstream the user had before).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -61,15 +62,24 @@ def _is_ai_guard_entry(entry: dict) -> bool:
 
 
 def _configured_proxy_url() -> str:
-    """The proxy URL the installer would currently write into agent settings.
+    """The local proxy URL an older ai-guard install would have written.
 
-    Reads ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from
-    ``config.env`` (falling back to the constants), so callers can compare
-    against ``env.ANTHROPIC_BASE_URL`` to decide whether an entry is ours.
+    Resolves ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from the
+    environment first, then ``config.env``, then the constants — so callers can
+    compare against ``env.ANTHROPIC_BASE_URL`` to decide whether a redirect is
+    ours. The environment is checked first because the CLI loads the existing
+    ``config.env`` into it at startup, and ``install`` rewrites ``config.env``
+    (dropping the now-obsolete proxy host/port) *before* the redirect is
+    stripped — so a non-default host/port survives only in the environment by
+    the time we look.
     """
     config = storage.load_config()
-    host = config.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
-    port = config.get("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
+
+    def _resolve(key: str, default: str) -> str:
+        return os.environ.get(key) or config.get(key) or default
+
+    host = _resolve("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = _resolve("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
     return f"http://{host}:{port}"
 
 

@@ -267,6 +267,27 @@ class TestClaudeInstaller:
         assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
         assert set(data["hooks"].keys()) == set(HOOK_EVENTS)
 
+    def test_install_strips_legacy_custom_proxy_redirect(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upgrade from a proxy install with a NON-default host/port.
+
+        ``config.env`` no longer carries the proxy host/port (and ``install``
+        rewrites it before the redirect is stripped), so the only place the
+        custom value survives is the environment — which the CLI loads from the
+        old ``config.env`` at startup. ``_configured_proxy_url`` must read it
+        from there, else the stale redirect (pointing at the dead custom proxy)
+        is left behind.
+        """
+        monkeypatch.setenv("DD_AI_GUARD_PROXY_HOST", "0.0.0.0")
+        monkeypatch.setenv("DD_AI_GUARD_PROXY_PORT", "41234")
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://0.0.0.0:41234"}}))
+
+        ClaudeInstaller().install()
+        data = _read(settings)
+        assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
+
     def test_reinstall_is_idempotent(self, tmp_home: Path) -> None:
         _make_claude_dir(tmp_home)
         ClaudeInstaller().install()
