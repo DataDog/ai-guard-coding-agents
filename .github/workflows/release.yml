@@ -54,5 +54,10 @@ jobs:
     with:
       release_tag: ${{ needs.release-please.outputs.tag_name }}
     permissions:
+      # Caps the token for the whole reusable workflow, so it must cover every
+      # scope build.yml's jobs request: contents:write to upload release
+      # assets, plus id-token/attestations:write for Sigstore build provenance.
       contents: write
+      id-token: write
+      attestations: write
     secrets: inherit

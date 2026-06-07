@@ -2,11 +2,17 @@
 # AI Guard bootstrap installer.
 #
 # Detects the current OS/arch, downloads the matching ai-guard release
-# tarball from GitHub, verifies its SHA-256 checksum, extracts the
+# tarball from GitHub, verifies its SHA-256 checksum and (when the GitHub CLI
+# is available) its Sigstore build-provenance signature, extracts the
 # PyInstaller onedir bundle into ~/.local/share/ai-guard, symlinks the
 # launcher at ~/.local/bin/ai-guard, and hands off to `ai-guard install`
 # (or `ai-guard uninstall` if --uninstall is passed) for the actual install
 # logic.
+#
+# Signature verification needs the GitHub CLI (`gh`, https://cli.github.com).
+# When it's missing the install drops to a checksum-only path behind an
+# explicit, default-No confirmation; a signature that is present but invalid
+# always aborts.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/DataDog/ai-guard-coding-agents/main/scripts/install.sh | sh
@@ -179,6 +185,22 @@ fi
 require mktemp
 require tar
 
+# gh is *optional*: when present (with the `attestation` subcommand) we verify
+# the bundle's Sigstore build-provenance signature, which proves it was built
+# by this repo's release workflow — something the checksum cannot. It is not
+# counted toward `missing`; when unavailable the download path drops to a
+# checksum-only install gated behind an explicit confirmation (see "Verify
+# signature").
+ATTEST_TOOL=""
+if [ -z "$LOCAL_BUNDLE" ]; then
+    if command -v gh >/dev/null 2>&1 && gh attestation verify --help >/dev/null 2>&1; then
+        ATTEST_TOOL="gh"
+        ok "gh (signature verification)"
+    else
+        warn "gh not available — signature verification will be limited"
+    fi
+fi
+
 if [ "$missing" -gt 0 ]; then
     die "$missing required tool(s) missing — install them and re-run"
 fi
@@ -266,6 +288,17 @@ download() {
     esac
 }
 
+# Like download() but returns non-zero instead of aborting when the asset is
+# absent — used for the signature bundle, which may legitimately be missing on
+# releases that predate signing.
+soft_download() {
+    url="$1"; dest="$2"
+    case "$HTTP_TOOL" in
+        curl) curl -fL --proto '=https' --tlsv1.2 -o "$dest" "$url" >/dev/null 2>&1 ;;
+        wget) wget -qO "$dest" "$url" >/dev/null 2>&1 ;;
+    esac
+}
+
 action "fetching $TARBALL"
 download "${BASE}/${TARBALL}"        "${TMP}/${TARBALL}"
 download "${BASE}/${TARBALL}.sha256" "${TMP}/${TARBALL}.sha256"
@@ -280,6 +313,77 @@ download "${BASE}/${TARBALL}.sha256" "${TMP}/${TARBALL}.sha256"
     esac
 )
 ok "checksum verified"
+
+# --- verify signature --------------------------------------------------------
+# The checksum proves the bytes are intact, not that they came from us: anyone
+# who can write to the GitHub release could swap the tarball *and* its sidecar.
+# The Sigstore build-provenance attestation closes that gap — it proves the
+# bundle was produced by this repo's release workflow.
+#
+# Verification is best-effort by design: a *failed* check (the bundle exists
+# but doesn't match) always aborts, but when the signature can't be checked at
+# all (no gh, or no published bundle) we fall back to a checksum-only install
+# behind an explicit, default-No confirmation rather than blocking the user.
+section "Verify signature"
+
+# Big, unmissable warning + a default-No prompt. Reads from /dev/tty because
+# stdin is the `curl … | sh` pipe; with no terminal (CI) we cannot confirm, so
+# the safe default (decline) means abort.
+warn_unverified_and_confirm() {
+    reason="$1"
+    cols=$(tput cols 2>/dev/null || echo 80)
+    fill=$((cols - 1)); [ "$fill" -lt 4 ] && fill=4
+    rule=""; i=0
+    while [ "$i" -lt "$fill" ]; do rule="${rule}─"; i=$((i + 1)); done
+
+    printf '\n%s%s%s%s\n' "$BOLD" "$RED" "$rule" "$NC"
+    err "${BOLD}DANGER: the download's authenticity could NOT be verified${NC}"
+    detail "$reason"
+    detail ""
+    detail "The SHA-256 checksum only proves the file wasn't corrupted in"
+    detail "transit. It does NOT prove the file came from Datadog: anyone who"
+    detail "could tamper with the release can produce a matching checksum."
+    detail "Continuing means trusting code that has not been authenticated,"
+    detail "which could be malicious."
+    detail ""
+    detail "Recommended: stop, install the GitHub CLI (https://cli.github.com),"
+    detail "and re-run so the signature can be verified."
+    printf '%s%s%s%s\n\n' "$BOLD" "$RED" "$rule" "$NC"
+
+    if [ ! -r /dev/tty ]; then
+        die "aborting: cannot verify authenticity and no terminal is available to confirm"
+    fi
+
+    printf '  %s?%s  %sContinue WITHOUT verification?%s [y/N] ' \
+        "$YELLOW" "$NC" "$BOLD" "$NC"
+    ans=""
+    read -r ans < /dev/tty || ans=""
+    case "$ans" in
+        y|Y|yes|Yes|YES) warn "proceeding without signature verification" ;;
+        *) die "aborting at user request" ;;
+    esac
+}
+
+if [ -z "$ATTEST_TOOL" ]; then
+    warn_unverified_and_confirm "the GitHub CLI (gh) is not installed."
+elif ! soft_download "${BASE}/${TARBALL}.sigstore.json" "${TMP}/${TARBALL}.sigstore.json"; then
+    # gh is present but no attestation was published for this version (e.g. a
+    # release that predates signing). We can't verify, so fall back to the
+    # same gated confirmation rather than hard-failing.
+    warn_unverified_and_confirm "no signature was published for ${VERSION}."
+else
+    # Verify offline against the downloaded bundle so an unauthenticated gh
+    # still works, and pin the expected identity to this repo. A mismatch here
+    # is a hard failure — no prompt, no fallback.
+    if gh attestation verify "${TMP}/${TARBALL}" \
+        --bundle "${TMP}/${TARBALL}.sigstore.json" \
+        --repo "$REPO" >/dev/null 2>&1; then
+        ok "signature verified"
+        detail "build provenance attested to ${REPO}"
+    else
+        die "signature verification FAILED for ${TARBALL} — refusing to install"
+    fi
+fi
 
 # Extract the onedir bundle into a sibling dir under ${TMP} and install it.
 # The tarball's top-level directory is the artifact name (e.g. ``ai-guard-linux-x86_64``).

@@ -37,9 +37,16 @@ jobs:
     name: Build (${{ matrix.os }} / ${{ matrix.arch }})
     needs: test
     permissions:
-      # `write` is required only for the final `gh release upload` step;
-      # all earlier steps in this job operate read-only on the repo.
-      contents: write
+      # Read-only on the repo: this job builds, signs, and uploads CI
+      # artifacts, but never writes to the GitHub Release — that is deferred to
+      # the environment-gated `publish-release` job below.
+      contents: read
+      # Build provenance attestation: `id-token: write` lets the runner mint
+      # the OIDC token Sigstore/Fulcio signs against, and `attestations: write`
+      # records the attestation against the repo so `gh attestation verify`
+      # can find it. See the "Attest build provenance" step below.
+      id-token: write
+      attestations: write
 
     strategy:
       fail-fast: false
@@ -107,6 +114,31 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}.zip").Hash.ToLower()
           "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii -NoNewline "${{ matrix.artifact }}.zip.sha256"
 
+      # Sign the artifact's build provenance via Sigstore (keyless: the
+      # signature is bound to this workflow's OIDC identity and recorded in the
+      # Rekor transparency log — no long-lived key to manage). The checksum
+      # sidecar only proves integrity; this proves the bundle was built by this
+      # repo's workflow, which is what install.sh verifies with
+      # `gh attestation verify`.
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: dist/${{ matrix.artifact }}${{ runner.os == 'Windows' && '.zip' || '.tar.gz' }}
+
+      # Stage the Sigstore bundle next to the artifact under a deterministic
+      # name so it can ride along as a release asset. install.sh downloads it
+      # and verifies offline via `--bundle`, so a client doesn't need to be
+      # `gh auth`-logged-in to check the signature.
+      - name: Stage attestation bundle (Unix)
+        if: runner.os != 'Windows'
+        run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/${{ matrix.artifact }}.tar.gz.sigstore.json"
+
+      - name: Stage attestation bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "${{ steps.attest.outputs.bundle-path }}" "dist/${{ matrix.artifact }}.zip.sigstore.json"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: runner.os != 'Windows'
         with:
@@ -114,6 +146,7 @@ jobs:
           path: |
             dist/${{ matrix.artifact }}.tar.gz
             dist/${{ matrix.artifact }}.tar.gz.sha256
+            dist/${{ matrix.artifact }}.tar.gz.sigstore.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: runner.os == 'Windows'
@@ -122,14 +155,51 @@ jobs:
           path: |
             dist/${{ matrix.artifact }}.zip
             dist/${{ matrix.artifact }}.zip.sha256
+            dist/${{ matrix.artifact }}.zip.sigstore.json
 
-      # Attach assets to the GitHub Release when the workflow is invoked for
-      # a release — either by release.yml (reusable-workflow call with
-      # `release_tag`) or by a manual `v*` tag push (recovery path).
+      # The bootstrap install.sh is the root of trust for the whole flow — it
+      # runs the checksum and signature checks, so it must itself be pinned and
+      # verifiable rather than fetched from the mutable tip of `main`. Attest it
+      # here and publish it (in publish-release) as a versioned release asset so
+      # users can verify it before running. install.sh is platform-independent,
+      # so this runs once, on the linux-x86_64 leg.
+      - name: Attest installer script
+        id: attest_installer
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: scripts/install.sh
+
+      - name: Stage installer attestation bundle
+        if: matrix.os == 'ubuntu-latest'
+        run: cp "${{ steps.attest_installer.outputs.bundle-path }}" scripts/install.sh.sigstore.json
+
+      - name: Upload installer artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: installer
+          path: |
+            scripts/install.sh
+            scripts/install.sh.sigstore.json
+
+  # Publish every built + signed asset to the GitHub Release in one place,
+  # behind the `release` environment. Required reviewers on that environment
+  # mean a release can't be published by a single identity: the provenance
+  # attestation proves *who built* an artifact, not that publishing it was
+  # *authorised* — this human gate provides that. Keeping publish out of the
+  # matrix build job also lets that job stay `contents: read`.
+  publish-release:
+    name: Publish release assets
+    needs: build
+    if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
       - name: Resolve release tag
         id: release_tag
-        if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
-        shell: bash
         run: |
           if [ -n "${{ inputs.release_tag }}" ]; then
             tag="${{ inputs.release_tag }}"
@@ -138,44 +208,24 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Attach assets to GitHub Release (Unix)
-        if: steps.release_tag.outputs.tag != '' && runner.os != 'Windows'
-        working-directory: dist
+      # Pull every per-platform artifact plus the installer into one flat
+      # directory; each was uploaded under its own name by the build matrix.
+      - name: Download built artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach assets to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-        # release-please creates the Release before this job runs, so the
-        # view check normally succeeds and the create branch is a no-op.
-        # For the manual recovery path (`git push origin vX.Y.Z`) no
-        # Release exists yet — the first matrix runner creates it with
-        # auto-generated notes; later runners see it and skip. `|| true`
-        # tolerates the race where two runners try to create at once.
+        # release-please creates the Release before this workflow runs, so the
+        # view check normally succeeds. The create branch covers the manual
+        # recovery path (`git push origin vX.Y.Z`), where no Release exists yet.
         run: |
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$RELEASE_TAG" --generate-notes || true
+              --title "$RELEASE_TAG" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" \
-            "${{ matrix.artifact }}.tar.gz" \
-            "${{ matrix.artifact }}.tar.gz.sha256" \
-            --clobber --repo "$GITHUB_REPOSITORY"
-
-      - name: Attach assets to GitHub Release (Windows)
-        if: steps.release_tag.outputs.tag != '' && runner.os == 'Windows'
-        working-directory: dist
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-        run: |
-          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" `
-              --title "$env:RELEASE_TAG" --generate-notes
-            # tolerate race with another matrix runner that just created it
-            $LASTEXITCODE = 0
-          }
-          gh release upload "$env:RELEASE_TAG" `
-            "${{ matrix.artifact }}.zip" `
-            "${{ matrix.artifact }}.zip.sha256" `
-            --clobber --repo "$env:GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
