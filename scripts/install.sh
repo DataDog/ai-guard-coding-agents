@@ -19,10 +19,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --advanced
 #   curl -fsSL .../install.sh | sh -s -- --uninstall --yes
 #
+# Always installs the latest published release.
+#
 # Environment overrides:
-#   AI_GUARD_VERSION       version to install, without the leading "v" (default:
-#                          the version baked in below, kept in sync by
-#                          release-please)
 #   AI_GUARD_BIN_DIR       symlink location          (default: ~/.local/bin)
 #   AI_GUARD_BUNDLE_DIR    bundle extract root       (default: ~/.local/share/ai-guard)
 #   AI_GUARD_BUNDLE        path to a built ai-guard tarball (same .tar.gz
@@ -35,8 +34,6 @@ set -eu
 REPO="DataDog/ai-guard-coding-agents"
 BIN_DIR="${AI_GUARD_BIN_DIR:-$HOME/.local/bin}"
 BUNDLE_DIR="${AI_GUARD_BUNDLE_DIR:-$HOME/.local/share/ai-guard}"
-DEFAULT_VERSION="0.4.0"  # x-release-please-version
-VERSION="v${AI_GUARD_VERSION:-$DEFAULT_VERSION}"
 LOCAL_BUNDLE="${AI_GUARD_BUNDLE:-}"
 
 # --- ui primitives -----------------------------------------------------------
@@ -268,17 +265,15 @@ if [ -n "$LOCAL_BUNDLE" ]; then
     handoff "$@"
 fi
 
-# --- release version ---------------------------------------------------------
-section "Release version"
-ok "$VERSION"
-
 # --- download ----------------------------------------------------------------
 section "Download bundle"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+# Always resolve the latest published release; GitHub redirects
+# /releases/latest/download/<asset> to the newest non-prerelease tag.
+BASE="https://github.com/${REPO}/releases/latest/download"
 
 download() {
     url="$1"; dest="$2"
@@ -370,14 +365,18 @@ elif ! soft_download "${BASE}/${TARBALL}.sigstore.json" "${TMP}/${TARBALL}.sigst
     # gh is present but no attestation was published for this version (e.g. a
     # release that predates signing). We can't verify, so fall back to the
     # same gated confirmation rather than hard-failing.
-    warn_unverified_and_confirm "no signature was published for ${VERSION}."
+    warn_unverified_and_confirm "no signature was published for this release."
 else
     # Verify offline against the downloaded bundle so an unauthenticated gh
-    # still works, and pin the expected identity to this repo. A mismatch here
-    # is a hard failure — no prompt, no fallback.
+    # still works. Pin both the repo *and* the producing workflow: --repo alone
+    # would accept any attestation signed by any workflow in the repo, so we
+    # also require it to come from build.yml (the only workflow that builds and
+    # signs releases). A mismatch here is a hard failure — no prompt, no
+    # fallback.
     if gh attestation verify "${TMP}/${TARBALL}" \
         --bundle "${TMP}/${TARBALL}.sigstore.json" \
-        --repo "$REPO" >/dev/null 2>&1; then
+        --repo "$REPO" \
+        --signer-workflow "${REPO}/.github/workflows/build.yml" >/dev/null 2>&1; then
         ok "signature verified"
         detail "build provenance attested to ${REPO}"
     else

@@ -162,20 +162,22 @@ jobs:
       # verifiable rather than fetched from the mutable tip of `main`. Attest it
       # here and publish it (in publish-release) as a versioned release asset so
       # users can verify it before running. install.sh is platform-independent,
-      # so this runs once, on the linux-x86_64 leg.
+      # so this runs once. Gate on the artifact name rather than the runner
+      # label so retargeting a leg's runner (e.g. ubuntu-latest -> ubuntu-24.04)
+      # can't silently stop the installer from being published.
       - name: Attest installer script
         id: attest_installer
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: scripts/install.sh
 
       - name: Stage installer attestation bundle
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
         run: cp "${{ steps.attest_installer.outputs.bundle-path }}" scripts/install.sh.sigstore.json
 
       - name: Upload installer artifact
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: installer

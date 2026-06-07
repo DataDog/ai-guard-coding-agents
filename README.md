@@ -34,8 +34,8 @@ under `$HOME`: no root, no `sudo`, no system-wide changes.
 
 ### Quick start
 
-The installer is published as a signed release asset (not served from the mutable `main` branch), so you can verify it
-before running it. With the [GitHub CLI](https://cli.github.com) (`gh`) installed:
+The installer is published as a signed release asset, so you can verify it before running it. 
+With the [GitHub CLI](https://cli.github.com) (`gh`) installed:
 
 ```sh
 # Download the installer and its signature from the latest release
@@ -46,12 +46,13 @@ curl -fsSLO https://github.com/DataDog/ai-guard-coding-agents/releases/latest/do
 gh attestation verify install.sh \
   --bundle install.sh.sigstore.json \
   --repo DataDog/ai-guard-coding-agents \
+  --signer-workflow DataDog/ai-guard-coding-agents/.github/workflows/build.yml \
   && sh install.sh
 ```
 
-To pin a specific version, replace `latest` with a release tag (e.g. `download/v0.4.0/install.sh`). Without `gh` you can
-run `sh install.sh` directly, but you then trust the bootstrap on the strength of the HTTPS download alone — the script
-still verifies the downloaded binary as described in [Verifying the download](#verifying-the-download).
+Without `gh` you can run `sh install.sh` directly, but you then trust the bootstrap on the strength of the HTTPS
+download alone — the script still verifies the downloaded binary as described in
+[Verifying the download](#verifying-the-download).
 
 Windows support is coming via `install.ps1`.
 
@@ -94,7 +95,8 @@ To verify a download yourself:
 ```sh
 gh attestation verify ai-guard-linux-x86_64.tar.gz \
   --bundle ai-guard-linux-x86_64.tar.gz.sigstore.json \
-  --repo DataDog/ai-guard-coding-agents
+  --repo DataDog/ai-guard-coding-agents \
+  --signer-workflow DataDog/ai-guard-coding-agents/.github/workflows/build.yml
 ```
 
 ### What gets installed
