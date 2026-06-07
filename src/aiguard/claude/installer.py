@@ -64,23 +64,26 @@ def _is_ai_guard_entry(entry: dict) -> bool:
 def _configured_proxy_url() -> str:
     """The local proxy URL an older ai-guard install would have written.
 
-    Resolves ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from the
-    environment first, then ``config.env``, then the constants — so callers can
-    compare against ``env.ANTHROPIC_BASE_URL`` to decide whether a redirect is
-    ours. The environment is checked first because the CLI loads the existing
-    ``config.env`` into it at startup, and ``install`` rewrites ``config.env``
-    (dropping the now-obsolete proxy host/port) *before* the redirect is
-    stripped — so a non-default host/port survives only in the environment by
-    the time we look.
+    Resolves ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` via
+    :func:`_legacy_config_value`, so callers can compare against
+    ``env.ANTHROPIC_BASE_URL`` to decide whether a redirect is ours.
     """
-    config = storage.load_config()
-
-    def _resolve(key: str, default: str) -> str:
-        return os.environ.get(key) or config.get(key) or default
-
-    host = _resolve("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
-    port = _resolve("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
+    host = _legacy_config_value("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = _legacy_config_value("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
     return f"http://{host}:{port}"
+
+
+def _legacy_config_value(key: str, default: str = "") -> str:
+    """Resolve a value left by an older proxy-based install: env first, then file.
+
+    The environment is checked before ``config.env`` because the CLI loads the
+    existing ``config.env`` into the environment at startup, and ``install``
+    rewrites ``config.env`` with the new hook-only field set *before* the legacy
+    redirect is stripped. A key dropped from that new field set (the proxy
+    host/port, or the captured ``DD_AI_GUARD_ANTHROPIC_UPSTREAM``) therefore
+    survives only in the environment by the time we look.
+    """
+    return os.environ.get(key) or storage.load_config().get(key) or default
 
 
 def _remove_proxy_redirect(env_block: dict) -> bool:
@@ -96,7 +99,7 @@ def _remove_proxy_redirect(env_block: dict) -> bool:
     base_url = env_block.get("ANTHROPIC_BASE_URL")
     if not isinstance(base_url, str) or base_url != _configured_proxy_url():
         return False
-    upstream = storage.load_config().get("DD_AI_GUARD_ANTHROPIC_UPSTREAM", "")
+    upstream = _legacy_config_value("DD_AI_GUARD_ANTHROPIC_UPSTREAM")
     if upstream and upstream != AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT:
         env_block["ANTHROPIC_BASE_URL"] = upstream
     else:

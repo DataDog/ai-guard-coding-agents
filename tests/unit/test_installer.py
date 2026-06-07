@@ -288,6 +288,25 @@ class TestClaudeInstaller:
         data = _read(settings)
         assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
 
+    def test_install_restores_captured_upstream_from_env(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upgrade where the old install captured the user's real upstream.
+
+        ``config.env`` no longer carries ``DD_AI_GUARD_ANTHROPIC_UPSTREAM`` and
+        ``install`` rewrites the file before the redirect is stripped, so the
+        captured upstream survives only in the environment (loaded by the CLI
+        from the old ``config.env``). It must be restored over the proxy
+        redirect, not dropped.
+        """
+        monkeypatch.setenv("DD_AI_GUARD_ANTHROPIC_UPSTREAM", "https://upstream.example/v1")
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
+
+        ClaudeInstaller().install()
+        data = _read(settings)
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://upstream.example/v1"
+
     def test_reinstall_is_idempotent(self, tmp_home: Path) -> None:
         _make_claude_dir(tmp_home)
         ClaudeInstaller().install()
