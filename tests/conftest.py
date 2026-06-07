@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ddtrace.appsec.ai_guard import AIGuardAbortError, Message
 
 from aiguard import utils
+from aiguard.client import AIGuardAbortError, Message
 from tests.transcripts import TranscriptWriter
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ def tracer_recorder(monkeypatch: pytest.MonkeyPatch) -> TracerRecorder:
 
 
 class FakeAIGuardClient:
-    """Stand-in for ``ddtrace.appsec.ai_guard.AIGuardClient``.
+    """Stand-in for ``aiguard.client.CodingAgentAIGuardClient``.
 
     Records every ``evaluate(messages, options)`` call. Tests that want a
     blocking outcome can ``queue_abort(AIGuardAbortError(...))`` ahead of time;

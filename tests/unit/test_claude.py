@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ddtrace.appsec.ai_guard import AIGuardAbortError
 
 from aiguard.claude.handler import (
     ClaudeHandler,
@@ -40,9 +39,9 @@ from aiguard.claude.handler import (
     _fetch_command_expansion,
     _find_command_file,
     _load_messages,
-    _privacy_mode,
     _resolve_transcript,
 )
+from aiguard.client import AIGuardAbortError
 from aiguard.constants import AIGuardConstants
 from tests.transcripts import (
     TranscriptWriter,
@@ -55,28 +54,6 @@ from tests.transcripts import (
 
 def _handler() -> ClaudeHandler:
     return ClaudeHandler(blocking=True)
-
-
-class TestPrivacyMode:
-    """``_privacy_mode`` resolves DD_AI_GUARD_PRIVACY_MODE for the client."""
-
-    def test_defaults_to_coding_agent_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(AIGuardConstants.PRIVACY_MODE_ENV, raising=False)
-        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
-
-    def test_honours_default_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "DEFAULT")
-        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
-
-    def test_is_case_insensitive_and_trims(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "  default ")
-        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_DEFAULT
-
-    def test_unknown_value_falls_back_to_coding_agent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(AIGuardConstants.PRIVACY_MODE_ENV, "bogus")
-        assert _privacy_mode() == AIGuardConstants.PRIVACY_MODE_CODING_AGENT
 
 
 def _pre_tool_payload(transcript_path: str, **extra: Any) -> bytes:
