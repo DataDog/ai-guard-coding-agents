@@ -80,18 +80,22 @@ class ClaudeHandler(Handler):
         method_name = "_" + _CAMEL_TO_SNAKE.sub("_", hook).lower()
         method = getattr(self, method_name, None)
         if not method:
-            logger.warning("claude: unhandled hook %r", hook)
+            logger.error("claude: unhandled hook %r", hook)
             return b""
 
-        logger.debug(
-            "claude: dispatching hook %s (session=%s, agent=%s, tool=%s)",
-            hook,
-            event.get("session_id", ""),
-            event.get("agent_id", ""),
-            event.get("tool_name", ""),
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "claude: dispatching hook %s: %s",
+                hook,
+                json.dumps(event, ensure_ascii=False, default=str),
+            )
         result = method(event)
-        logger.debug("claude: hook %s -> %s", hook, "decision" if result else "allow")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "claude: hook %s -> %s",
+                hook,
+                json.dumps(result, ensure_ascii=False, default=str) if result else "allow",
+            )
         return b"" if result is None else json.dumps(result, ensure_ascii=False).encode()
 
     # ── Hook handlers ─────────────────────────────────────────────────────────
@@ -173,6 +177,33 @@ class ClaudeHandler(Handler):
             tool_name = event.get("tool_name", "")
             logger.error("PostToolUseFailure: blocked tool '%s', reason=%s", tool_name, e.reason)
             return _blocked_tool_response(event, e)
+
+        return None
+
+    @tracer.wrap(
+        name=AIGuardConstants.USER_PROMPT_EXPANSION, resource=AIGuardConstants.HOOK_RESOURCE
+    )
+    def _user_prompt_expansion(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        tags = _set_common_tags(event)
+        agent_id = event.get("agent_id", "")
+        messages = _load_messages(event.get("transcript_path", ""), agent_id)
+        prompt = event.get("prompt", "")
+        if prompt:
+            messages.append(Message(role="user", content=prompt))
+        # Inject the command/skill definition so AI Guard inspects what the
+        # expansion will actually load, not just the line the user typed.
+        expansion = _fetch_command_expansion(event)
+        if expansion:
+            messages.extend(expansion)
+        try:
+            self._evaluate_messages(messages, tags)
+        except AIGuardAbortError as e:
+            logger.error(
+                "UserPromptExpansion: blocked command '%s', reason=%s",
+                event.get("command_name", ""),
+                e.reason,
+            )
+            return _blocked_prompt_response(event, e)
 
         return None
 
@@ -568,6 +599,219 @@ def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> d
         result["reason"] = display_reason
 
     return result
+
+
+def _blocked_prompt_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
+    """Block a slash command / skill expansion (``UserPromptExpansion``).
+
+    Unlike a blocked tool call — where the turn continues and Claude can narrate
+    the block to the user — ``decision: "block"`` here erases the command from
+    context and no model turn follows. So there is no point routing guidance to
+    the model via ``additionalContext``; the explanation must go in ``reason``,
+    which Claude Code surfaces directly to the user. We pack the command name,
+    the top risk + confidence, and the investigate link into that reason.
+    """
+    command = event.get("command_name") or event.get("command", "")
+    target = f"`/{command}`" if command else "this command"
+    lines = [
+        f"\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m blocked {target} by security policy.",
+        f"Reason: {abort.reason}",
+    ]
+    if abort.tag_probs:
+        ranked = sorted(abort.tag_probs.items(), key=lambda kv: kv[1], reverse=True)
+        top_tag, top_prob = ranked[0]
+        lines.append(f"Most likely risk: {top_tag} at {top_prob * 100:.0f}% confidence")
+        high = [f"{tag} ({prob * 100:.0f}%)" for tag, prob in ranked if prob >= 0.5]
+        if len(high) > 1:
+            lines.append(f"Other high-confidence risks: {', '.join(high[1:])}")
+
+    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
+    if ui_url:
+        lines.append(f"Investigate in Datadog: {ui_url}")
+
+    return {
+        "decision": "block",
+        "reason": "\n".join(lines),
+        "hookSpecificOutput": {
+            "hookEventName": event.get("hook_event_name", ""),
+        },
+    }
+
+
+def _fetch_command_expansion(event: dict[str, Any]) -> list[Message]:
+    """Model a slash command / skill expansion as a tool call plus its result.
+
+    ``UserPromptExpansion`` only carries the command name and the raw line the
+    user typed — not what it expands into. We resolve the definition ourselves
+    (a slash command's markdown file, or a skill's ``SKILL.md``) and present it
+    to AI Guard as an assistant ``command``/``skill`` tool call followed by a
+    ``tool`` message holding the expanded body, so the instructions about to be
+    injected are evaluated the same way a real tool invocation would be.
+
+    Returns an empty list when no definition can be located.
+    """
+    expansion_type = event.get("expansion_type", "")
+    if expansion_type != "slash_command":
+        return []
+
+    command = event.get("command_name", "")
+    if not command:
+        logger.debug("expansion: no command_name in event; nothing to inject")
+        return []
+
+    cwd = event.get("cwd", "")
+    command_args = event.get("command_args", "")
+    logger.debug(
+        "expansion: resolving command_name=%r type=%r (cwd=%r)", command, expansion_type, cwd
+    )
+
+    kind, content = "command", None
+    command_file = _find_command_file(cwd, command)
+    if command_file is not None:
+        logger.debug("expansion: resolved command %r to file %s", command, command_file)
+        try:
+            content = command_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            logger.error("failed to read command %s", command_file, exc_info=True)
+    else:
+        logger.debug("expansion: no slash-command file found for %r", command)
+
+    if content is None:
+        skill_folder = _find_skill_folder(cwd, command)
+        if skill_folder is not None:
+            md = skill_folder / "SKILL.md"
+            logger.debug("expansion: resolved command %r to skill %s", command, md)
+            try:
+                content, kind = md.read_text(encoding="utf-8", errors="replace"), "skill"
+            except OSError:
+                logger.error("failed to read skill %s", md, exc_info=True)
+        else:
+            logger.debug("expansion: no skill folder found for %r", command)
+
+    if content is None:
+        logger.debug("expansion: %r not resolved to a command or skill; injecting nothing", command)
+        return []
+
+    logger.debug("expansion: injecting %s %r (%d chars)", kind, command, len(content))
+    tool_use_id = f"expansion-{command}"
+    arguments = json.dumps({"command": command, "args": command_args}, ensure_ascii=False)
+    return [
+        Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall(id=tool_use_id, function=Function(name=kind, arguments=arguments))
+            ],
+        ),
+        Message(role="tool", tool_call_id=tool_use_id, content=content),
+    ]
+
+
+def _find_command_file(cwd: str, command: str) -> Path | None:
+    """Locate a Claude Code slash-command markdown file by name.
+
+    Slash commands are markdown files under a ``commands`` directory. Names may
+    be plain (``"review-code"`` → ``commands/review-code.md``) or namespaced
+    (``"frontend:component"`` → ``commands/frontend/component.md``; the leading
+    segment of a namespaced name also scopes the plugin search). The command
+    roots are checked in precedence order:
+
+      1. Project-level: ``<cwd>/.claude/commands`` and the same path on every
+         ancestor up to the filesystem root (so a command installed at the repo
+         root is found from a deeply nested ``cwd``).
+      2. User-level: ``<claude_config_dir>/commands``.
+      3. Plugin-scoped (for a namespaced name): any
+         ``<claude_config_dir>/plugins/**/commands`` whose path contains the
+         leading namespace segment.
+      4. Fallback: any ``<claude_config_dir>/plugins/**/commands``.
+
+    Within each root we first try the exact relative path (``<rel>.md``). If
+    that misses, we fall back to a recursive search for ``<basename>.md`` — a
+    nested command (``commands/frontend/component.md``) may be reported by its
+    basename alone (``component``) rather than as ``frontend:component``.
+
+    Returns the first existing file, or ``None``.
+    """
+    if not command:
+        return None
+
+    parts = command.split(":")
+    # ``frontend:component`` → ``frontend/component.md``; ``foo`` → ``foo.md``.
+    leaf = Path(*parts).with_suffix(".md")
+    basename = f"{Path(parts[-1]).name}.md" if parts[-1] else ""
+    plugin = parts[0] if len(parts) > 1 else ""
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add_root(commands_root: Path) -> None:
+        try:
+            resolved = commands_root.resolve(strict=False)
+        except (OSError, ValueError):
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    # 1. Project-level: walk up from cwd until the filesystem root.
+    if cwd:
+        try:
+            here = Path(cwd).expanduser().resolve(strict=False)
+            for parent in (here, *here.parents):
+                _add_root(parent / ".claude" / "commands")
+        except (OSError, ValueError):
+            logger.debug("find_command: invalid cwd %r", cwd)
+
+    # 2. User-level commands directory.
+    claude_home = paths.claude_config_dir()
+    _add_root(claude_home / "commands")
+
+    # 3 & 4. Plugin marketplaces — plugin-scoped first, then any.
+    plugins_root = claude_home / "plugins"
+    if plugins_root.is_dir():
+        try:
+            commands_dirs = [d for d in plugins_root.rglob("commands") if d.is_dir()]
+        except OSError:
+            logger.debug("find_command: error walking %s", plugins_root, exc_info=True)
+            commands_dirs = []
+        if plugin:
+            for d in commands_dirs:
+                if plugin in d.parts:
+                    _add_root(d)
+        for d in commands_dirs:
+            _add_root(d)
+
+    # Resolve per root in precedence order: within a root, an exact relative
+    # path wins, then a recursive ``<basename>.md`` fallback (a nested command
+    # like ``commands/frontend/component.md`` may be reported as just
+    # ``component``). We must finish both checks for a root before moving to the
+    # next, so a higher-precedence project command reported by basename is not
+    # beaten by a lower-precedence user/plugin command that matches the exact
+    # path — otherwise AI Guard would inspect the wrong definition.
+    for root in roots:
+        # Exact relative path, guarding against components that escape the
+        # commands root (e.g. a ``..`` in the command name).
+        target = (root / leaf).resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError:
+            target = None
+        if target is not None and target.is_file():
+            return target
+
+        if basename and root.is_dir():
+            try:
+                for match in sorted(root.rglob(basename)):
+                    if match.is_file():
+                        logger.debug(
+                            "find_command: resolved %r via basename search to %s", command, match
+                        )
+                        return match
+            except OSError:
+                logger.debug("find_command: error searching %s", root, exc_info=True)
+
+    logger.debug("find_command: %r not found (checked %d root(s))", command, len(roots))
+    return None
 
 
 def _skill_folder(event: dict[str, Any]) -> Path | None:

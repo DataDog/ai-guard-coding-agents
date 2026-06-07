@@ -69,6 +69,16 @@
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ai-guard hook claude UserPromptExpansion"
+          }
+        ]
+      }
     ]
   }
 }
