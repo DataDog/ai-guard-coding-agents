@@ -16,15 +16,6 @@ def _backend():
     raise RuntimeError(f"unsupported platform: {sys.platform}")
 
 
-def install(host: str, port: int) -> None:
-    wrapper.write()
-    _backend().install(host, port)
-
-
 def uninstall() -> None:
     _backend().uninstall()
     wrapper.remove()
-
-
-def is_running() -> bool:
-    return _backend().is_running()

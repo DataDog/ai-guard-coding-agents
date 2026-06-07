@@ -21,34 +21,30 @@ a = Analysis(
     pathex=["src"],
     binaries=[],
     datas=[
-        # Service-registration templates loaded via importlib.resources.
-        ("src/aiguard/installer/templates/*.in", "aiguard/installer/templates"),
         *_keyring_datas,
     ],
     hiddenimports=[
         "aiguard",
+        "aiguard.keychain",
         "aiguard.claude",
         "aiguard.claude.installer",
-        "aiguard.claude.proxy",
+        # The Claude handler is imported lazily by the hook command, so the
+        # static analyser can't see it.
+        "aiguard.claude.handler",
         "aiguard.hooks",
         "aiguard.hooks.hooks",
-        "aiguard.proxy",
-        "aiguard.proxy.server",
         "aiguard.installer",
         "aiguard.installer.agent",
         "aiguard.installer.installer",
         "aiguard.installer.ui",
         # service.manager picks one of these at runtime via platform check, so
-        # PyInstaller's static analyser can't see the conditional import.
+        # PyInstaller's static analyser can't see the conditional import. The
+        # service backends are kept only to tear down a legacy proxy service.
         "aiguard.installer.service",
         "aiguard.installer.service.manager",
         "aiguard.installer.service.launchd",
         "aiguard.installer.service.systemd_user",
         "aiguard.installer.service.wrapper",
-        # Templates are accessed via importlib.resources.files(__package__);
-        # the package itself must be importable for the lookup to find the
-        # bundled .in files declared in `datas`.
-        "aiguard.installer.templates",
         # keyring backends are resolved at runtime via entry points, so the
         # static analyser can't see them; collect_submodules above lists them.
         *_keyring_hiddenimports,

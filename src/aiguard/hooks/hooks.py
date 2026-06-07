@@ -4,58 +4,66 @@
 # This product includes software developed at Datadog (https://www.datadoghq.com/).
 # Copyright 2026-Present Datadog, Inc.
 
-"""``ai-guard hook AGENT HOOK`` — thin HTTP shim to the running proxy."""
+"""``ai-guard hook AGENT HOOK``"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import os
 import sys
-import urllib.parse
+from abc import ABC, abstractmethod
 
-import aiohttp
 import click
-
-from aiguard import __version__
-from aiguard.constants import AIGuardConstants
 
 logger = logging.getLogger("ai_guard")
 
-# The proxy's _is_hook_request() routes on this UA; keep the substring stable.
-_USER_AGENT = f"ai-guard-cli/{__version__}"
+_TRUTHY = frozenset({"1", "true", "t", "yes", "y", "on"})
 
 
-async def _post(url: str, payload: bytes) -> tuple[int, bytes]:
-    """POST ``payload`` to ``url`` and return ``(status, body)``."""
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": _USER_AGENT,
-            },
-        ) as resp:
-            return resp.status, await resp.read()
+def _resolve_block() -> bool:
+    return os.environ.get("DD_AI_GUARD_BLOCK", "true").strip().lower() in _TRUTHY
+
+
+class Handler(ABC):
+    """Handles hook events emitted by a specific coding agent."""
+
+    @abstractmethod
+    def agent(self) -> str:
+        """Return the name of the agent."""
+
+    @abstractmethod
+    def handle_hook(self, hook: str, body: bytes) -> bytes:
+        """Dispatch the named hook event; return the agent-shaped response body."""
+
+
+def _build_handler(agent: str, block: bool) -> Handler | None:
+    """Instantiate the :class:`Handler` registered for ``agent``.
+
+    Handlers are imported lazily: each pulls in ddtrace and the AI Guard client,
+    which we don't want to load for unrelated CLI commands.
+    """
+    if agent == "claude":
+        from aiguard.claude.handler import ClaudeHandler
+
+        return ClaudeHandler(block)
+
+    return None
 
 
 @click.command("hook")
 @click.argument("agent")
 @click.argument("hook_name", metavar="HOOK")
-@click.option(
-    "--proxy-url",
-    "proxy_url",
-    envvar="DD_AI_GUARD_PROXY_URL",
-    default=AIGuardConstants.PROXY_URL_DEFAULT,
-    show_default=True,
-    help="Base URL of the running ai-guard proxy.",
-)
-def hook(agent: str, hook_name: str, proxy_url: str) -> None:
-    """Forward a hook event to the running ai-guard proxy.
+def hook(agent: str, hook_name: str) -> None:
+    """Dispatch a hook event to the handler for the selected agent.
 
-    Reads the event payload from stdin, POSTs it to
-    ``<PROXY_URL>/hook/<AGENT>/<HOOK>``, and writes any response body to
-    stdout. Exits 1 if the proxy is unreachable or returns an error status.
+    Reads the event payload from stdin, hands it to the agent's
+    :class:`Handler`, and writes any response body to stdout. The ``DD_*`` keys
+    the handler needs are loaded into the environment from ``config.env`` by the
+    top-level CLI before this command runs.
+
+    A failed hook must never break the host agent's command flow, so every
+    error is logged and swallowed (the agent sees an empty response and
+    proceeds as if no hook ran).
 
     \b
     Examples:
@@ -64,28 +72,17 @@ def hook(agent: str, hook_name: str, proxy_url: str) -> None:
     """
     try:
         payload = sys.stdin.buffer.read()
-        url = proxy_url.rstrip("/") + f"/hook/{agent}/{hook_name}"
 
-        parsed = urllib.parse.urlparse(url)
-        if not parsed.scheme or not parsed.hostname:
-            raise click.ClickException(f"invalid proxy URL: {proxy_url!r}")
+        handler = _build_handler(agent, _resolve_block())
+        if handler is None:
+            logger.error("no hook handler registered for agent %r", agent)
+            return
 
-        try:
-            status, body = asyncio.run(_post(url, payload))
-        except aiohttp.InvalidURL as exc:
-            raise click.ClickException(f"invalid proxy URL: {proxy_url!r}") from exc
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
-            raise click.ClickException(
-                f"failed to reach ai-guard proxy at {proxy_url}: {exc}"
-            ) from exc
+        response = handler.handle_hook(hook_name, payload)
 
-        if status >= 400:
-            detail = body.decode("utf-8", errors="replace").strip() or f"status {status}"
-            raise click.ClickException(f"proxy returned {status}: {detail}")
-
-        if body:
-            sys.stdout.buffer.write(body)
+        if response:
+            sys.stdout.buffer.write(response)
     except Exception:
         # Swallowed by design: a failed hook must not break the host agent's
         # command flow. The error is logged with traceback for diagnosis.
-        logger.exception("failed to invoke hook", exc_info=True)
+        logger.exception("failed to invoke hook %r for agent %r", hook_name, agent)

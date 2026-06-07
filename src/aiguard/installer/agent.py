@@ -63,12 +63,12 @@ class AgentInstaller(ABC):
         """Return ``True`` when currently installed for the agent"""
 
     @abstractmethod
-    def install(self, proxy_url: str) -> list[Path]:
-        """Merge our hooks into the agent settings and point env at the proxy."""
+    def install(self) -> list[Path]:
+        """Merge the ai-guard hooks into the agent's settings."""
 
     @abstractmethod
     def uninstall(self) -> list[Path]:
-        """Remove our hooks from the agent settings."""
+        """Remove the ai-guard hooks from the agent's settings."""
 
     def env_fields(self) -> list[Field]:
         """Return agent-specific config fields to merge into the prompt list."""

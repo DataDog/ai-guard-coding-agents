@@ -8,30 +8,116 @@
 
 Two surfaces:
 
-  * :class:`TestMainCli` / :class:`TestSetupLogging` — the top-level
-    ``ai-guard`` entry point and its log-file plumbing.
-  * :class:`TestHookCli` — the ``ai-guard hook AGENT HOOK`` command, a thin
-    HTTP shim to a running proxy. Errors are swallowed (logged via
-    ``logger.exception`` and exit 0) so a failing hook never breaks the
-    calling agent's command flow.
+  * :class:`TestHookCli` — the ``ai-guard hook AGENT HOOK`` command. It selects
+    the agent's handler and runs it in-process; errors are swallowed (logged via
+    ``logger.exception``, exit 0) so a failing hook never breaks the calling
+    agent's command flow.
+  * :class:`TestDdtraceDeferred` — importing ``aiguard.cli`` must not pull in
+    ddtrace (credentials/log setup run before the client is built).
+  * :class:`TestMainCli` / :class:`TestSetupLogging` — the top-level entry point
+    and its log-file plumbing.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
-from aiguard import __version__
-from aiguard.cli import _setup_logging, main
 from aiguard.hooks.hooks import hook
+from tests.transcripts import TranscriptWriter, assistant_tool_use, user_text
+
+# ── ai-guard hook AGENT HOOK ──────────────────────────────────────────────────
+
+
+def _invoke(args: list[str], stdin: bytes = b"{}") -> Any:
+    return CliRunner().invoke(hook, args, input=stdin)
+
+
+@pytest.mark.usefixtures("tmp_home", "fake_endpoint_id")
+class TestHookCli:
+    """The ``hook`` command dispatches stdin to the agent's handler in-process."""
+
+    def test_dispatches_to_claude_handler_and_allows(self, fake_ai_guard) -> None:
+        result = _invoke(["claude", "SessionStart"], json.dumps({"session_id": "s1"}).encode())
+        assert result.exit_code == 0, result.output
+        assert result.output == ""
+
+    def test_writes_block_decision_to_stdout(
+        self, transcripts: TranscriptWriter, fake_ai_guard
+    ) -> None:
+        from ddtrace.appsec.ai_guard import AIGuardAbortError
+
+        path = transcripts.write_main(
+            "s1", [assistant_tool_use("tu1", "Bash", {"command": "rm -rf /"})]
+        )
+        fake_ai_guard.queue_abort(
+            AIGuardAbortError(action="DENY", reason="prompt_injection", tags=["t"])
+        )
+        event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "transcript_path": path,
+            "tool_name": "Bash",
+            "tool_use_id": "tu1",
+        }
+        result = _invoke(["claude", "PreToolUse"], json.dumps(event).encode())
+
+        assert result.exit_code == 0
+        body = json.loads(result.output)
+        assert body["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_unknown_agent_is_noop_and_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.ERROR, logger="ai_guard"):
+            result = _invoke(["bogus", "SessionStart"])
+        assert result.exit_code == 0
+        assert result.output == ""
+        assert any("no hook handler registered" in rec.message for rec in caplog.records)
+
+    def test_handler_construction_error_is_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def _boom(meta: Any = None) -> Any:
+            raise RuntimeError("no credentials")
+
+        monkeypatch.setattr("aiguard.claude.handler.new_ai_guard_client", _boom)
+        with caplog.at_level(logging.ERROR, logger="ai_guard"):
+            result = _invoke(["claude", "SessionStart"])
+
+        assert result.exit_code == 0
+        assert result.output == ""
+        assert any("failed to invoke hook" in rec.message for rec in caplog.records)
+
+    def test_invalid_json_payload_is_tolerated(self, fake_ai_guard) -> None:
+        result = _invoke(["claude", "PreToolUse"], b"{not json")
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_empty_stdin_is_tolerated(self, fake_ai_guard) -> None:
+        result = _invoke(["claude", "SessionStart"], b"")
+        assert result.exit_code == 0
+
+    def test_block_env_var_disables_blocking(
+        self, transcripts: TranscriptWriter, fake_ai_guard, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DD_AI_GUARD_BLOCK", "false")
+        path = transcripts.write_main("s1", [user_text("hi")])
+        event = {"session_id": "s1", "transcript_path": path, "tool_name": "Bash"}
+        result = _invoke(["claude", "PreToolUse"], json.dumps(event).encode())
+        assert result.exit_code == 0
+        assert fake_ai_guard.calls[0][1].get("block") is False
+
+    def test_blocks_by_default(self, transcripts: TranscriptWriter, fake_ai_guard) -> None:
+        path = transcripts.write_main("s1", [user_text("hi")])
+        event = {"session_id": "s1", "transcript_path": path, "tool_name": "Bash"}
+        result = _invoke(["claude", "PreToolUse"], json.dumps(event).encode())
+        assert result.exit_code == 0
+        assert fake_ai_guard.calls[0][1].get("block") is True
+
 
 # ── ai-guard (top-level) ──────────────────────────────────────────────────────
 
@@ -39,12 +125,12 @@ from aiguard.hooks.hooks import hook
 class TestDdtraceDeferred:
     """Importing the CLI must not pull in ddtrace.
 
-    The proxy command loads DD_API_KEY from the keychain and scrubs OTEL_ vars
-    *before* importing ddtrace, which reads both at import time. That only works
-    if nothing on the ``aiguard.cli`` import path imports ddtrace eagerly — so
-    storage/server keep ``Message`` under ``TYPE_CHECKING`` and the heavy
-    ddtrace imports live inside the proxy command. Run in a clean subprocess
-    since the test process already has ddtrace loaded via other modules.
+    ddtrace reads DD_* / OTEL_ env at import time, and the CLI loads credentials
+    (config.env + keychain) into the environment before the AI Guard client is
+    built. That ordering only holds if nothing on the ``aiguard.cli`` import
+    path imports ddtrace eagerly — the handler that needs it is loaded lazily by
+    the hook command. Run in a clean subprocess since the test process already
+    has ddtrace loaded via other modules.
     """
 
     def test_importing_cli_does_not_import_ddtrace(self) -> None:
@@ -54,26 +140,32 @@ class TestDdtraceDeferred:
         code = "import aiguard.cli, sys; sys.exit('ddtrace' in sys.modules)"
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         assert result.returncode == 0, (
-            "ddtrace was imported just by importing aiguard.cli — the proxy's "
-            "keychain/OTEL setup would then run too late.\n" + result.stderr
+            "ddtrace was imported just by importing aiguard.cli — credential and "
+            "logging setup would then run too late.\n" + result.stderr
         )
 
 
 class TestMainCli:
     def test_version(self) -> None:
+        from aiguard import __version__
+        from aiguard.cli import main
+
         result = CliRunner().invoke(main, ["--version"])
         assert result.exit_code == 0
         assert __version__ in result.output
 
-    def test_help_lists_subcommands(self) -> None:
+    def test_help_lists_hook_subcommand(self) -> None:
+        from aiguard.cli import main
+
         result = CliRunner().invoke(main, ["--help"])
         assert result.exit_code == 0
         assert "hook" in result.output
-        assert "proxy" in result.output
 
 
 class TestSetupLogging:
     def test_none_attaches_null_handler(self) -> None:
+        from aiguard.cli import _setup_logging
+
         logger = logging.getLogger("ai_guard")
         before = list(logger.handlers)
         try:
@@ -83,6 +175,8 @@ class TestSetupLogging:
             logger.handlers = before
 
     def test_writes_file(self, tmp_path: Path) -> None:
+        from aiguard.cli import _setup_logging
+
         log_file = tmp_path / "x" / "ai.log"
         logger = logging.getLogger("ai_guard")
         before = list(logger.handlers)
@@ -103,6 +197,8 @@ class TestSetupLogging:
             logger.setLevel(before_level)
 
     def test_respects_log_level(self, tmp_path: Path) -> None:
+        from aiguard.cli import _setup_logging
+
         log_file = tmp_path / "ai.log"
         logger = logging.getLogger("ai_guard")
         before = list(logger.handlers)
@@ -123,156 +219,3 @@ class TestSetupLogging:
                     logger.removeHandler(h)
                     h.close()
             logger.setLevel(before_level)
-
-
-# ── ai-guard hook AGENT HOOK ──────────────────────────────────────────────────
-
-
-def _start_mock_proxy(state: dict[str, Any]) -> tuple[HTTPServer, threading.Thread]:
-    """Start an in-process HTTP server that captures requests into ``state``."""
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length) if length else b""
-            state["calls"].append(
-                {
-                    "path": self.path,
-                    "body": body,
-                    "content_type": self.headers.get("Content-Type", ""),
-                }
-            )
-
-            outcome = state.get("outcome", {"status": 204, "body": b""})
-            status = outcome.get("status", 200)
-            reply = outcome.get("body", b"")
-            content_type = outcome.get("content_type", "application/json")
-
-            self.send_response(status)
-            if reply:
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(reply)))
-            else:
-                self.send_header("Content-Length", "0")
-            self.end_headers()
-            if reply:
-                self.wfile.write(reply)
-
-        def log_message(self, fmt: str, *args: Any) -> None:
-            return None
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, thread
-
-
-@pytest.fixture
-def mock_proxy() -> Iterator[dict[str, Any]]:
-    state: dict[str, Any] = {"calls": [], "outcome": {"status": 204, "body": b""}}
-    server, thread = _start_mock_proxy(state)
-    state["url"] = f"http://127.0.0.1:{server.server_port}"
-    try:
-        yield state
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def _invoke(args: list[str], stdin: str = "{}") -> Any:
-    return CliRunner().invoke(hook, args, input=stdin)
-
-
-class TestHookCli:
-    """The ``hook`` command POSTs stdin to the proxy and writes the reply."""
-
-    def test_posts_stdin_to_correct_path(self, mock_proxy: dict[str, Any]) -> None:
-        payload = json.dumps({"session_id": "s1"})
-        result = _invoke(
-            ["claude", "session-start", "--proxy-url", mock_proxy["url"]],
-            stdin=payload,
-        )
-
-        assert result.exit_code == 0, result.output
-        assert len(mock_proxy["calls"]) == 1
-        call = mock_proxy["calls"][0]
-        assert call["path"] == "/hook/claude/session-start"
-        assert call["body"] == payload.encode()
-        assert call["content_type"] == "application/json"
-
-    def test_writes_response_body_to_stdout(self, mock_proxy: dict[str, Any]) -> None:
-        mock_proxy["outcome"] = {"status": 200, "body": b'{"ok": true}'}
-        result = _invoke(["claude", "session-start", "--proxy-url", mock_proxy["url"]])
-        assert result.exit_code == 0
-        assert result.output.strip() == '{"ok": true}'
-
-    def test_writes_nothing_on_204(self, mock_proxy: dict[str, Any]) -> None:
-        mock_proxy["outcome"] = {"status": 204, "body": b""}
-        result = _invoke(["claude", "session-end", "--proxy-url", mock_proxy["url"]])
-        assert result.exit_code == 0
-        assert result.output == ""
-
-    def test_logs_4xx_but_does_not_fail(
-        self, mock_proxy: dict[str, Any], caplog: pytest.LogCaptureFixture
-    ) -> None:
-        mock_proxy["outcome"] = {
-            "status": 404,
-            "body": b"no handler for agent 'bogus'",
-            "content_type": "text/plain",
-        }
-        with caplog.at_level(logging.ERROR, logger="ai_guard"):
-            result = _invoke(["bogus", "session-start", "--proxy-url", mock_proxy["url"]])
-
-        # CLI never breaks the host agent: exit 0, body absorbed, error logged.
-        assert result.exit_code == 0
-        assert result.output == ""
-        assert any("failed to invoke hook" in rec.message for rec in caplog.records)
-
-    def test_logs_5xx_but_does_not_fail(
-        self, mock_proxy: dict[str, Any], caplog: pytest.LogCaptureFixture
-    ) -> None:
-        mock_proxy["outcome"] = {"status": 500, "body": b"", "content_type": "text/plain"}
-        with caplog.at_level(logging.ERROR, logger="ai_guard"):
-            result = _invoke(["claude", "session-start", "--proxy-url", mock_proxy["url"]])
-        assert result.exit_code == 0
-        assert any("failed to invoke hook" in rec.message for rec in caplog.records)
-
-    def test_proxy_unreachable_logs_but_does_not_fail(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        # Pick a port that is almost certainly closed.
-        with caplog.at_level(logging.ERROR, logger="ai_guard"):
-            result = _invoke(
-                ["claude", "session-start", "--proxy-url", "http://127.0.0.1:1"],
-            )
-        assert result.exit_code == 0
-        assert any("failed to invoke hook" in rec.message for rec in caplog.records)
-
-    def test_uses_env_var_for_proxy_url(
-        self, mock_proxy: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DD_AI_GUARD_PROXY_URL", mock_proxy["url"])
-        result = _invoke(["claude", "session-start"])
-        assert result.exit_code == 0
-        assert mock_proxy["calls"][0]["path"] == "/hook/claude/session-start"
-
-    def test_supports_nested_hook_names(self, mock_proxy: dict[str, Any]) -> None:
-        _invoke(
-            ["claude", "sub/agent-start", "--proxy-url", mock_proxy["url"]],
-            stdin='{"x": 1}',
-        )
-        assert mock_proxy["calls"][0]["path"] == "/hook/claude/sub/agent-start"
-
-    def test_passes_through_empty_stdin(self, mock_proxy: dict[str, Any]) -> None:
-        result = _invoke(["claude", "session-start", "--proxy-url", mock_proxy["url"]], stdin="")
-        assert result.exit_code == 0
-        assert mock_proxy["calls"][0]["body"] == b""
-
-    def test_invalid_proxy_url_logged(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.ERROR, logger="ai_guard"):
-            result = _invoke(
-                ["claude", "session-start", "--proxy-url", "not-a-url"],
-            )
-        assert result.exit_code == 0
-        assert any("failed to invoke hook" in rec.message for rec in caplog.records)

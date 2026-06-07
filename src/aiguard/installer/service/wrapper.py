@@ -13,22 +13,7 @@ startup. On a host with no keychain they fall back to config.env and the
 
 from __future__ import annotations
 
-import os
-
 from aiguard import paths
-from aiguard.installer.templates import render
-
-
-def write() -> None:
-    content = render(
-        "ai-guard-service.sh.in",
-        CONFIG_ENV=str(paths.config_env_path()),
-        BINARY=str(paths.binary_path()),
-    )
-    target = paths.wrapper_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    os.chmod(target, 0o755)
 
 
 def remove() -> None:

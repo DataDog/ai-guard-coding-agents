@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -16,8 +17,9 @@ from aiguard.constants import AIGuardConstants
 from aiguard.installer import ui
 from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.installer.service import manager as service_manager
-from aiguard.storage import load_config, save_config
-from aiguard.utils import wait_ready
+from aiguard.storage import save_config
+
+logger = logging.getLogger("ai_guard")
 
 SUPPORTED_AGENTS: list[AgentInstaller] = [ClaudeInstaller()]
 
@@ -34,18 +36,6 @@ FIELDS: list[Field] = [
         default="True",
         tier=Tier.ADVANCED,
     ),
-    Field(
-        "DD_AI_GUARD_PROXY_HOST",
-        "Proxy bind host",
-        default=AIGuardConstants.PROXY_HOST_DEFAULT,
-        tier=Tier.ADVANCED,
-    ),
-    Field(
-        "DD_AI_GUARD_PROXY_PORT",
-        "Proxy bind port",
-        default=str(AIGuardConstants.PROXY_PORT_DEFAULT),
-        tier=Tier.ADVANCED,
-    ),
     Field("DD_TRACE_ENABLED", "Enable tracing", default="True", tier=Tier.SILENT),
     Field("DD_AI_GUARD_ENABLED", "Enable AI Guard", default="True", tier=Tier.SILENT),
     Field(
@@ -58,12 +48,6 @@ FIELDS: list[Field] = [
         "_DD_APM_TRACING_AGENTLESS_ENABLED",
         "Enable agentless tracer",
         default="true",
-        tier=Tier.SILENT,
-    ),
-    Field(
-        "DD_AI_GUARD_PROXY_IDLE_TIMEOUT",
-        "Shut down after N seconds with no requests (0 keeps the LLM proxy running forever)",
-        default="300",
         tier=Tier.SILENT,
     ),
     Field(
@@ -156,10 +140,6 @@ def _prompt(field: Field, env: dict[str, str]) -> str:
     # reinstall silently resets customised entries when the user hits Enter.
     default = env_value or field.default
     return ui.prompt(label, default, field.secret)
-
-
-def _proxy_url(host: str, port: int) -> str:
-    return f"http://{host}:{port}"
 
 
 def _ensure_binary_in_place(c: Console) -> None:
@@ -258,8 +238,12 @@ def _path_warning(c: Console) -> None:
         ui.detail(c, Text(f'export PATH="{bin_dir}:$PATH"', style="bold"))
 
 
-def _service_path() -> str:
-    return str(paths.launchd_plist_path() if utils.is_macos() else paths.systemd_unit_path())
+def _remove_legacy_service() -> None:
+    """Silently tear down a proxy service left by an older install, if present."""
+    try:
+        service_manager.uninstall()
+    except Exception:
+        logger.debug("could not fully remove legacy proxy service", exc_info=True)
 
 
 def _summary(
@@ -276,7 +260,6 @@ def _summary(
         ("Config", str(paths.config_env_path())),
         ("Keys", secrets_loc),
         ("App log", str(paths.log_file_path())),
-        ("Service", _service_path()),
     ]
 
     if agent_updates:
@@ -324,7 +307,7 @@ def install(
     agents_selected: tuple[str, ...],
     no_color: bool,
 ) -> None:
-    """Install ai-guard: wire hooks, write config, start the proxy service."""
+    """Install ai-guard: wire the agent's hooks and write config."""
     c = ui.console(no_color)
 
     if not (utils.is_macos() or utils.is_linux()):
@@ -358,24 +341,15 @@ def install(
 
     # ── Configure ─────────────────────────────────────────────────────────────
     ui.section(c, "Configure")
-    # Re-install: stored values become defaults; real env vars override them
-    # so the user can change a key by re-exporting it before re-running.
-    stored = load_config()
-    if stored:
-        ui.action(c, f"reusing {len(stored)} value(s) from {paths.config_env_path()}")
-    # Secrets persisted to the keychain on a previous install are no longer in
-    # config.env, so fold them back in as prompt defaults — otherwise a
-    # re-install would treat DD_API_KEY / DD_APP_KEY as missing. Real env vars
-    # still win so the user can rotate a key by re-exporting it.
-    keychain_secrets = keychain.load_secrets()
-    if keychain_secrets:
-        ui.action(c, f"reusing {len(keychain_secrets)} secret(s) from the OS keychain")
-    merged_env = {**stored, **keychain_secrets, **os.environ}
+    # The CLI has already merged config.env and any keychain-stored secrets into
+    # the environment (stored values as a base, anything exported live taking
+    # precedence), so prompt straight from os.environ — re-running with a key
+    # re-exported changes it.
     try:
         values = _collect_fields(
             advanced=advanced,
             non_interactive=non_interactive,
-            env=merged_env,
+            env=dict(os.environ),
             agents=agents,
         )
     except MissingRequiredError as exc:
@@ -412,46 +386,22 @@ def install(
     elif secret_values:
         ui.warn(c, "no OS keychain available — API & app keys saved to config.env")
 
-    host = values.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
-    port = int(values.get("DD_AI_GUARD_PROXY_PORT", AIGuardConstants.PROXY_PORT_DEFAULT))
-    proxy_url = _proxy_url(host, port)
-
-    # ── Install ─────────────────────────────────────────────────────────
-    ui.section(c, "Install")
-    msg = Text()
-    msg.append("proxy at ")
-    msg.append(proxy_url, style="dim")
-    ui.action(c, msg)
+    # ── Install hooks ───────────────────────────────────────────────────────────
+    # The ``ai-guard hook`` commands wired into the agent run in-process, so the
+    # launcher just needs to be on disk — there is no proxy service to start.
+    ui.section(c, "Install hooks")
+    _ensure_binary_in_place(c)
     agent_updates = {}
     for agent in agents:
-        updated = agent.install(proxy_url)
+        updated = agent.install()
         agent_updates[agent.name] = updated
         ui.ok(c, Text(agent.name, style="bold"))
         for path in updated:
             ui.detail(c, str(path))
 
-    # ── Service ───────────────────────────────────────────────────────────────
-    ui.section(c, "Register service")
-    _ensure_binary_in_place(c)
-    try:
-        service_manager.install(host, port)
-    except Exception as exc:
-        ui.err(c, f"failed to register service: {exc}")
-        sys.exit(1)
-
-    backend = "launchd LaunchAgent" if utils.is_macos() else "systemd --user unit"
-    ui.ok(c, f"{backend} registered")
-    ui.detail(c, _service_path())
-
-    ready_host = AIGuardConstants.PROXY_HOST_DEFAULT if host in ("0.0.0.0", "::") else host
-
-    if not wait_ready(ready_host, port, timeout=10.0):
-        ui.err(c, f"proxy did not come up on {ready_host}:{port} within 10s")
-        sys.exit(1)
-    body = Text()
-    body.append("proxy responding on ")
-    body.append(f"{ready_host}:{port}", style="dim")
-    ui.ok(c, body)
+    # Silently tear down a proxy service left by an older install — most users
+    # never had one, so we don't surface it in the output.
+    _remove_legacy_service()
 
     _path_warning(c)
     _summary(c, agent_updates=agent_updates, keychained=keychained)
@@ -464,29 +414,27 @@ def install(
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
 @click.option("--no-color", is_flag=True, help="Disable ANSI colour output.")
 def uninstall(yes: bool, no_color: bool) -> None:
-    """Uninstall ai-guard: remove hooks, service, and state. Logs remain."""
+    """Uninstall ai-guard: remove hooks and state, tear down any legacy service.
+
+    The application log is preserved.
+    """
     c = ui.console(no_color)
     ui.section(c, "Uninstall")
     if not yes:
         bullets = [
-            "Stop and remove the AI Guard service",
             "Remove AI Guard from detected agent configs",
-            f"Delete {paths.config_env_path()} and session history",
+            f"Delete {paths.config_env_path()}",
             "Remove the API & app keys from the OS keychain",
             "Delete the binary at ~/.local/bin/ai-guard",
-            f"Keep {paths.log_file_path()}* (proxy logs)",
+            f"Keep {paths.log_file_path()}* (application logs)",
         ]
         ui.confirm_block(c, "About to:", bullets)
         if not click.confirm("Continue?", default=False):
             ui.warn(c, "aborted")
             sys.exit(1)
 
-    ui.section(c, "Stop service")
-    try:
-        service_manager.uninstall()
-        ui.ok(c, "service stopped and unregistered")
-    except Exception as exc:
-        ui.warn(c, f"service uninstall reported: {exc}")
+    # Silently tear down a proxy service left by an older install (see install).
+    _remove_legacy_service()
 
     ui.section(c, "Restored")
     agent_updates: dict[str, list[Path]] = {}
@@ -511,7 +459,7 @@ def uninstall(yes: bool, no_color: bool) -> None:
 
     ui.section(c, "Result")
     _purge_state_dir()
-    ui.ok(c, "config + session history removed")
+    ui.ok(c, "config removed")
 
     for key in keychain.SECRET_KEYS:
         keychain.delete(key)
@@ -562,9 +510,9 @@ def _remove_bundle(bundle: Path) -> None:
 
 
 def _purge_state_dir() -> None:
-    """Remove our config dir and per-session history; preserve the app log.
+    """Remove our config dir; preserve the app log.
 
-    The proxy's rotating application log (``ai-guard.log*``) is left in place
+    The rotating application log (``ai-guard.log*``) is left in place
     so the user keeps a forensic trail after uninstall.
     """
     config = paths.ai_guard_config_dir()

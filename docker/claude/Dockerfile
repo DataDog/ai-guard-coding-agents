@@ -55,7 +55,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates=20230311+deb12u1 \
     dumb-init=1.2.5-2 \
     git=1:2.39.5-0+deb12u3 \
-    netcat-openbsd=1.219-1 \
     openssh-client=1:9.2p1-2+deb12u9 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -98,9 +97,6 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.139
 
 # ── Working directory for interactive sessions ────────────────────────────────
 WORKDIR /home/claude
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD nc -z 127.0.0.1 ${DD_AI_GUARD_PROXY_PORT:-29279}
 
 ENTRYPOINT ["dumb-init", "--", "/entrypoint.sh"]
 CMD ["sleep", "infinity"]

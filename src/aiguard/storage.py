@@ -4,102 +4,44 @@
 # This product includes software developed at Datadog (https://www.datadoghq.com/).
 # Copyright 2026-Present Datadog, Inc.
 
-"""Per-session conversation message storage.
+"""``config.env`` storage.
 
-Layout: ``$XDG_STATE_HOME/ai-guard/<agent>/<session_id>/<slot>.json`` — one JSON
-array of Message dicts per slot, in observation order. The slot is ``main`` for
-the parent session and the subagent's ``agent_id`` for sidechain calls, so
-subagent and main-session histories never overwrite each other. The state root
-can be overridden via ``DD_AI_GUARD_HOME``.
-
-``agent``, ``session_id`` and ``agent_id`` flow in from request metadata that
-the proxy does not control, so the resolved path is checked to stay within the
-storage root; anything else short-circuits as if the session did not exist
-(load returns ``[]``, save/delete are no-ops + log).
+Reads and writes ``$XDG_CONFIG_HOME/ai-guard/config.env`` — the ``DD_*`` keys
+ai-guard needs (API keys, site, block mode, …). The file is written with
+POSIX-shell quoting and locked to user-only permissions.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import shlex
-import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from aiguard import paths
-from aiguard.paths import state_dir
 from aiguard.utils import atomic_write
-
-if TYPE_CHECKING:
-    # Annotation-only (``from __future__ import annotations`` above). Kept off
-    # the runtime import path so importing storage (e.g. via the installer)
-    # doesn't pull in ddtrace before the proxy command can load DD_API_KEY.
-    from ddtrace.appsec.ai_guard import Message
 
 logger = logging.getLogger("ai_guard")
 
 _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
-# Slot name used for the parent session inside ``<agent>/<session_id>/``.
-# Subagents land in sibling files named after their ``agent_id``.
-_MAIN_SLOT = "main"
 
+def load_into_environ() -> None:
+    """Apply ``config.env`` to ``os.environ`` without overwriting existing vars.
 
-def _safe_resolve(*segments: str) -> Path | None:
-    """Resolve ``<root>/<segments...>`` and verify it lands exactly there.
-
-    ``relative_to(root)`` alone is insufficient: ``session_id=".."`` resolves
-    to the storage root and ``"../other"`` resolves to a sibling agent
-    directory — both pass that check and let ``delete_messages`` wipe data
-    outside the intended session. Comparing ``candidate.parts`` against the
-    expected tuple instead catches every segment that gets re-interpreted as a
-    traversal step, a separator, or an absolute path.
+    Entry points that run outside the install shell (the ``hook`` subprocess,
+    the CLI) call this so the ``DD_*`` keys written at install time are present.
+    Anything already exported by the caller wins; best-effort, never raises.
     """
+    import os
+
     try:
-        root = state_dir().resolve(strict=False)
-        candidate = root.joinpath(*segments).resolve(strict=False)
-    except (OSError, ValueError):
-        return None
-    return candidate if candidate.parts == root.parts + segments else None
-
-
-def _session_file(agent: str, session_id: str, agent_id: str = "") -> Path | None:
-    """Return the absolute path of a session slot's JSON file.
-
-    Layout is ``<root>/<agent>/<session_id>/<slot>.json``, with ``slot`` set to
-    the subagent ``agent_id`` for sidechain traffic and ``main`` for the
-    parent session. ``None`` if any segment would escape the expected location
-    (defense against path traversal via attacker-controlled
-    ``agent``/``session_id``/``agent_id``).
-    """
-    slot = agent_id or _MAIN_SLOT
-    candidate = _safe_resolve(agent, session_id, f"{slot}.json")
-    if candidate is None:
-        logger.warning(
-            "storage: rejecting agent/session_id/agent_id that escapes the storage root "
-            "(agent=%r session_id=%r agent_id=%r)",
-            agent,
-            session_id,
-            agent_id,
-        )
-    return candidate
-
-
-def _session_dir(agent: str, session_id: str) -> Path | None:
-    """Return the directory holding every slot file for a session, or ``None``
-    if any segment would escape the expected location."""
-    candidate = _safe_resolve(agent, session_id)
-    if candidate is None:
-        logger.warning(
-            "storage: rejecting agent/session_id that escapes the storage root "
-            "(agent=%r session_id=%r)",
-            agent,
-            session_id,
-        )
-    return candidate
+        values = load_config()
+    except Exception:
+        logger.debug("could not load %s", paths.config_env_path(), exc_info=True)
+        return
+    for key, value in values.items():
+        os.environ.setdefault(key, value)
 
 
 def _quote(value: str) -> str:
@@ -111,59 +53,6 @@ def _quote(value: str) -> str:
     if value == "":
         return '""'
     return shlex.quote(value)
-
-
-def load_messages(agent: str, session_id: str, agent_id: str = "") -> list[Message]:
-    """Return the full message list for a session slot. ``[]`` if absent or unreadable.
-
-    ``agent_id`` selects the subagent slot; the empty string targets the parent
-    session.
-    """
-    if not agent or not session_id:
-        return []
-    path = _session_file(agent, session_id, agent_id)
-    if path is None or not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.error("failed to read %s", path, exc_info=True)
-        return []
-    return data if isinstance(data, list) else []
-
-
-def save_messages(
-    agent: str, session_id: str, messages: list[Message], *, agent_id: str = ""
-) -> None:
-    """Overwrite the slot file for ``(session_id, agent_id)`` with ``messages``."""
-    if not agent or not session_id or messages is None:
-        return
-    path = _session_file(agent, session_id, agent_id)
-    if path is None:
-        return
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(messages, ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
-        os.replace(tmp, path)
-    except OSError:
-        logger.error("failed to write %s", path, exc_info=True)
-
-
-def delete_messages(agent: str, session_id: str) -> None:
-    """Remove the session's stored history, including every subagent slot."""
-    if not agent or not session_id:
-        return
-    path = _session_dir(agent, session_id)
-    if path is None or not path.exists():
-        return
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        logger.error("failed to delete %s", path, exc_info=True)
 
 
 def load_config(path: Path | None = None) -> dict[str, str]:
