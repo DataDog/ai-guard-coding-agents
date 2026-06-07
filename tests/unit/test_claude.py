@@ -461,7 +461,10 @@ class TestHandleHookToolUse:
         _handler().handle_hook(
             "PreToolUse",
             _pre_tool_payload(
-                path, session_id="s", tool_use_id="tu1", tool_name="Bash",
+                path,
+                session_id="s",
+                tool_use_id="tu1",
+                tool_name="Bash",
                 tool_input={"command": "ls"},
             ),
         )
