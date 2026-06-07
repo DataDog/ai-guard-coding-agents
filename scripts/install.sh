@@ -368,17 +368,19 @@ elif ! soft_download "${BASE}/${TARBALL}.sigstore.json" "${TMP}/${TARBALL}.sigst
     warn_unverified_and_confirm "no signature was published for this release."
 else
     # Verify offline against the downloaded bundle so an unauthenticated gh
-    # still works. Pin both the repo *and* the producing workflow: --repo alone
-    # would accept any attestation signed by any workflow in the repo, so we
-    # also require it to come from build.yml (the only workflow that builds and
-    # signs releases). A mismatch here is a hard failure — no prompt, no
-    # fallback.
+    # still works. Pin the cert identity to build.yml running from a release
+    # tag: --repo alone accepts any workflow in the repo, and matching the
+    # signer workflow alone still accepts a workflow_dispatch from any branch.
+    # The regex requires the signer to be build.yml AND its ref to be refs/tags/
+    # v* — i.e. an actual tagged release build, not an ad-hoc run. A mismatch
+    # here is a hard failure — no prompt, no fallback.
+    cert_identity="^https://github\.com/${REPO}/\.github/workflows/build\.yml@refs/tags/v[0-9].*\$"
     if gh attestation verify "${TMP}/${TARBALL}" \
         --bundle "${TMP}/${TARBALL}.sigstore.json" \
         --repo "$REPO" \
-        --signer-workflow "${REPO}/.github/workflows/build.yml" >/dev/null 2>&1; then
+        --cert-identity-regex "$cert_identity" >/dev/null 2>&1; then
         ok "signature verified"
-        detail "build provenance attested to ${REPO}"
+        detail "build provenance attested to ${REPO} (release build)"
     else
         die "signature verification FAILED for ${TARBALL} — refusing to install"
     fi

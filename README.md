@@ -46,7 +46,7 @@ curl -fsSLO https://github.com/DataDog/ai-guard-coding-agents/releases/latest/do
 gh attestation verify install.sh \
   --bundle install.sh.sigstore.json \
   --repo DataDog/ai-guard-coding-agents \
-  --signer-workflow DataDog/ai-guard-coding-agents/.github/workflows/build.yml \
+  --cert-identity-regex '^https://github\.com/DataDog/ai-guard-coding-agents/\.github/workflows/build\.yml@refs/tags/v[0-9].*$' \
   && sh install.sh
 ```
 
@@ -96,7 +96,7 @@ To verify a download yourself:
 gh attestation verify ai-guard-linux-x86_64.tar.gz \
   --bundle ai-guard-linux-x86_64.tar.gz.sigstore.json \
   --repo DataDog/ai-guard-coding-agents \
-  --signer-workflow DataDog/ai-guard-coding-agents/.github/workflows/build.yml
+  --cert-identity-regex '^https://github\.com/DataDog/ai-guard-coding-agents/\.github/workflows/build\.yml@refs/tags/v[0-9].*$'
 ```
 
 ### What gets installed

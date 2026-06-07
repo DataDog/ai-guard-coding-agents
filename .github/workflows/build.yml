@@ -6,26 +6,29 @@
 
 name: Build native executables
 
+# Build + sign in the tag's context so the provenance records a source ref of
+# `refs/tags/vX.Y.Z` (which install.sh pins with `--source-ref`). `release:
+# published` is the automated path — release-please publishes the Release with
+# the dd-octo-sts app token, which (unlike GITHUB_TOKEN) does trigger this
+# workflow. `push: tags` is the manual recovery path (`git push origin vX.Y.Z`);
+# creating a Release via the API doesn't emit a tag push, so the two don't
+# double-fire. `workflow_dispatch` is for CI testing (runs from a branch, so
+# publish-release is skipped — see its `if`).
 on:
+  release:
+    types: [published]
   push:
     tags:
       - "v*"
-  workflow_call:
-    inputs:
-      release_tag:
-        description: "When set, attach built artifacts to this GitHub Release tag."
-        type: string
-        required: false
-        default: ""
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # Key on the release tag (when invoked by release.yml) so a long-running
-  # main-branch build doesn't cancel the release-time build of the same code.
-  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  # Key on the ref (always the tag for release/tag-push runs) so a release
+  # build is never cancelled by an unrelated run of the same code.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -194,7 +197,9 @@ jobs:
   publish-release:
     name: Publish release assets
     needs: build
-    if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
+    # Only the tag-context triggers (release / tag push) publish; a
+    # workflow_dispatch test run from a branch builds + attests but stops here.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -202,13 +207,8 @@ jobs:
     steps:
       - name: Resolve release tag
         id: release_tag
-        run: |
-          if [ -n "${{ inputs.release_tag }}" ]; then
-            tag="${{ inputs.release_tag }}"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        # github.ref is refs/tags/vX.Y.Z for both the release and tag-push paths.
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       # Pull every per-platform artifact plus the installer into one flat
       # directory; each was uploaded under its own name by the build matrix.
