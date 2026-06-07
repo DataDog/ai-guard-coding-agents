@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.4.0...v0.5.0) (2026-06-07)
+
+
+### 🚀 Features
+
+* add UserPromptExpansion hook for Claude Code ([#33](https://github.com/DataDog/ai-guard-coding-agents/issues/33)) ([bcb1e86](https://github.com/DataDog/ai-guard-coding-agents/commit/bcb1e86c74798a4798dc43f9c19583367b56cb58))
+* vendor AI Guard client to depend on released ddtrace ([#31](https://github.com/DataDog/ai-guard-coding-agents/issues/31)) ([8cd15be](https://github.com/DataDog/ai-guard-coding-agents/commit/8cd15be08613d4c8a3baa11d5dea6818206fe0f8))
+
+
+### ♻️ Code Refactoring
+
+* drop the HTTP proxy in favour of in-process Claude Code hooks ([#30](https://github.com/DataDog/ai-guard-coding-agents/issues/30)) ([f9e67f7](https://github.com/DataDog/ai-guard-coding-agents/commit/f9e67f7e10c110767adcb384f495ed59e198209f))
+
 ## [0.4.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.3.0...v0.4.0) (2026-06-05)
 
 
