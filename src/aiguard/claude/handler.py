@@ -210,11 +210,29 @@ def _load_messages(transcript_path: str, agent_id: str) -> list[Message]:
     """Rebuild the conversation history from Claude Code's session transcript."""
     path = _resolve_transcript(transcript_path, agent_id)
     if path is None:
+        logger.debug(
+            "no transcript resolved (transcript_path=%r, agent_id=%r)", transcript_path, agent_id
+        )
         return []
 
+    entries = _read_transcript(path)
     messages: list[Message] = []
-    for entry in _read_transcript(path):
+    for entry in entries:
         messages.extend(_entry_to_messages(entry))
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "transcript %s: read %d entr(y/ies): %s",
+            path,
+            len(entries),
+            json.dumps(entries, ensure_ascii=False, default=str),
+        )
+        logger.debug(
+            "transcript %s: parsed %d message(s): %s",
+            path,
+            len(messages),
+            json.dumps(messages, ensure_ascii=False, default=str),
+        )
     return messages
 
 
