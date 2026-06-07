@@ -83,7 +83,15 @@ class ClaudeHandler(Handler):
             logger.warning("claude: unhandled hook %r", hook)
             return b""
 
+        logger.debug(
+            "claude: dispatching hook %s (session=%s, agent=%s, tool=%s)",
+            hook,
+            event.get("session_id", ""),
+            event.get("agent_id", ""),
+            event.get("tool_name", ""),
+        )
         result = method(event)
+        logger.debug("claude: hook %s -> %s", hook, "decision" if result else "allow")
         return b"" if result is None else json.dumps(result, ensure_ascii=False).encode()
 
     # ── Hook handlers ─────────────────────────────────────────────────────────
@@ -167,12 +175,17 @@ class ClaudeHandler(Handler):
 
     def _evaluate_messages(self, messages: list[Message], tags: dict[str, Any]) -> None:
         if messages:
+            logger.debug(
+                "evaluating %d message(s) with AI Guard (block=%s)", len(messages), self._blocking
+            )
             try:
                 self._ai_guard.evaluate(messages, Options(block=self._blocking, tags=tags))
             except AIGuardAbortError:
                 raise
             except Exception:
                 logger.error("message evaluation with AI Guard failed", exc_info=True)
+        else:
+            logger.debug("no messages to evaluate; skipping AI Guard call")
         return None
 
 

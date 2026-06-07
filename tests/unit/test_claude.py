@@ -619,6 +619,20 @@ class TestHandleHookTags:
 class TestHandleHookDispatch:
     """Payload tolerance + camelCase → snake_case method dispatch."""
 
+    def test_dispatch_logs_at_debug(
+        self, tracer_recorder, tmp_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """At DEBUG the hook emits a visible dispatch + verdict line.
+
+        Without this the happy path is silent, so DD_AI_GUARD_LOG_LEVEL=DEBUG
+        looks like it has no effect.
+        """
+        with caplog.at_level(logging.DEBUG, logger="ai_guard"):
+            _handler().handle_hook("SessionStart", json.dumps({"session_id": "s1"}).encode())
+        messages = [r.message for r in caplog.records]
+        assert any("dispatching hook SessionStart" in m for m in messages)
+        assert any("-> allow" in m for m in messages)
+
     def test_tolerates_invalid_json(self, tracer_recorder, tmp_home: Path) -> None:
         out = _handler().handle_hook("SessionStart", b"{not json")
         assert out == b""
