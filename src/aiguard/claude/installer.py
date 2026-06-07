@@ -30,6 +30,7 @@ HOOK_EVENTS: tuple[str, ...] = (
     "PreToolUse",
     "PostToolUse",
     "PostToolUseFailure",
+    "UserPromptExpansion",
 )
 
 HOOK_COMMAND_PREFIX = "ai-guard hook claude"

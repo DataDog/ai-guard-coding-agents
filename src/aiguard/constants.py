@@ -24,6 +24,7 @@ class AIGuardConstants(object):
     SUBAGENT_STOP = "subagent-stop"
     PRE_TOOL = "pre-tool"
     POST_TOOL = "post-tool"
+    USER_PROMPT_EXPANSION = "user-prompt-expansion"
 
     # CODING AGENTS
     CLAUDE_CODE = "claude_code"

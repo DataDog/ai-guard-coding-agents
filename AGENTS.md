@@ -106,6 +106,7 @@ Method names map 1:1 to the event names in `docker/claude/claude-settings.json`:
 | `PreToolUse` | `_pre_tool_use` | Loads the transcript; for `Skill` calls injects the resolved `SKILL.md` body as a tool message so AI Guard sees what is about to load. On `AIGuardAbortError` returns `{"hookSpecificOutput": {"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":…,"additionalContext":…}}` — `permissionDecisionReason` is the branded TUI banner, `additionalContext` is the structured guidance for Claude. |
 | `PostToolUse` | `_post_tool_use` | Appends the tool result to the transcript history and re-evaluates. On abort returns both `{"decision":"block","reason":…}` (TUI banner) and `hookSpecificOutput.additionalContext`. |
 | `PostToolUseFailure` | `_post_tool_use_failure` | Same shape as PostToolUse but uses `event.error` as the tool content. |
+| `UserPromptExpansion` | `_user_prompt_expansion` | Fires before a slash command / skill name expands into a prompt. Resolves the command/skill definition (`_fetch_command_expansion` → the `commands/<name>.md` file or the skill's `SKILL.md`) and injects it as a modelled `command`/`skill` tool call + result, so AI Guard sees what the expansion will inject. On abort returns `{"decision":"block","reason":…}` (the command is erased from context). |
 
 ## Adding a new Claude Code hook
 
