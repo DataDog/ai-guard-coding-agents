@@ -425,6 +425,56 @@ class TestHandleHookToolUse:
         assert last["role"] == "assistant"
         assert last["tool_calls"][0]["function"]["name"] == "Bash"
 
+    def test_pre_tool_use_evaluates_pending_call_absent_from_transcript(
+        self, tracer_recorder, tmp_home: Path, transcripts: TranscriptWriter, fake_ai_guard
+    ) -> None:
+        """First call of a session: nothing flushed to the transcript yet. The
+        pending call must still be evaluated (built from the event), never
+        skipped — otherwise an unsafe call runs unchecked."""
+        path = transcripts.write_main("s-first", [])
+        out = _handler().handle_hook(
+            "PreToolUse",
+            _pre_tool_payload(
+                path,
+                session_id="s-first",
+                tool_name="Bash",
+                tool_input={"command": "rm -rf /"},
+            ),
+        )
+
+        assert out == b""
+        assert len(fake_ai_guard.calls) == 1  # not skipped despite the empty transcript
+        last = fake_ai_guard.last_messages[-1]
+        assert last["role"] == "assistant"
+        assert last["tool_calls"][0]["function"]["name"] == "Bash"
+        assert "rm -rf" in last["tool_calls"][0]["function"]["arguments"]
+
+    def test_pre_tool_use_does_not_duplicate_pending_call_in_transcript(
+        self, tracer_recorder, tmp_home: Path, transcripts: TranscriptWriter, fake_ai_guard
+    ) -> None:
+        """When the transcript already carries the pending tool_use, we don't
+        add a second copy of it."""
+        path = transcripts.write_main(
+            "s",
+            [user_text("go"), assistant_tool_use("tu1", "Bash", {"command": "ls"})],
+        )
+        _handler().handle_hook(
+            "PreToolUse",
+            _pre_tool_payload(
+                path, session_id="s", tool_use_id="tu1", tool_name="Bash",
+                tool_input={"command": "ls"},
+            ),
+        )
+
+        bash_calls = [
+            call
+            for m in fake_ai_guard.last_messages
+            if m.get("role") == "assistant"
+            for call in m.get("tool_calls", [])
+            if call["function"]["name"] == "Bash"
+        ]
+        assert len(bash_calls) == 1
+
     def test_pre_tool_use_injects_skill_markdown_as_tool_message(
         self, tracer_recorder, tmp_home: Path, transcripts: TranscriptWriter, fake_ai_guard
     ) -> None:

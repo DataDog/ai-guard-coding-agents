@@ -223,8 +223,11 @@ class TestGracefulBehavior:
         # Empty event → no transcript_path → nothing to evaluate.
         assert fake_ai_guard.calls == []
 
-    def test_missing_transcript_is_tolerated(self, fake_ai_guard) -> None:
+    def test_missing_transcript_still_evaluates_pending_call(self, fake_ai_guard) -> None:
+        # A missing/unflushed transcript must not skip the check — the pending
+        # call is still evaluated, built from the event.
         event = _pre_tool_event("/nonexistent/path.jsonl")
         result = _invoke("PreToolUse", event)
         assert result.exit_code == 0
-        assert fake_ai_guard.calls == []  # no messages loaded → evaluate skipped
+        assert len(fake_ai_guard.calls) == 1
+        assert fake_ai_guard.last_messages[-1]["tool_calls"][0]["function"]["name"] == "Bash"

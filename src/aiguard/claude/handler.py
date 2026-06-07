@@ -124,6 +124,9 @@ class ClaudeHandler(Handler):
         agent_id = event.get("agent_id", "")
         messages = _load_messages(event.get("transcript_path", ""), agent_id)
         tool_name = event.get("tool_name", "")
+        # Evaluate the pending call itself — never rely on the transcript having
+        # flushed it (it may not have, e.g. the first tool call in a session).
+        _append_pending_tool_call(messages, event)
         if tool_name == "Skill":
             # inject the skill content to validate if it can be safely loaded
             skill = _fetch_skill(event)
@@ -251,6 +254,37 @@ def _append_tool_result(
     ):
         return
     messages.append(Message(role="tool", tool_call_id=tool_use_id, content=content))
+
+
+def _append_pending_tool_call(messages: list[Message], event: dict[str, Any]) -> None:
+    """Ensure the PreToolUse pending tool call is part of what we evaluate."""
+    tool_name = event.get("tool_name", "")
+    if not tool_name:
+        return
+    tool_use_id = event.get("tool_use_id", "")
+    try:
+        arguments = json.dumps(event.get("tool_input", {}), ensure_ascii=False)
+    except (TypeError, ValueError):
+        arguments = "{}"
+
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls", []) or []:
+            if tool_use_id and call.get("id") == tool_use_id:
+                return
+            function = call.get("function", {})
+            if function.get("name") == tool_name and function.get("arguments") == arguments:
+                return
+
+    messages.append(
+        Message(
+            role="assistant",
+            tool_calls=[
+                ToolCall(id=tool_use_id, function=Function(name=tool_name, arguments=arguments))
+            ],
+        )
+    )
 
 
 def _resolve_transcript(transcript_path: str, agent_id: str) -> Path | None:
