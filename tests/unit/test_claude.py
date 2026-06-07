@@ -747,6 +747,20 @@ class TestFindCommandFile:
         # A direct ``commands/component.md`` is preferred over the nested match.
         assert _find_command_file("/", "component") == commands / "component.md"
 
+    def test_basename_fallback_preserves_root_precedence(self, tmp_home: Path) -> None:
+        # A higher-precedence project command reported by basename must win over
+        # a lower-precedence user command that matches the exact path — otherwise
+        # AI Guard would inspect the wrong definition.
+        proj_cmds = tmp_home / "proj" / ".claude" / "commands" / "frontend"
+        proj_cmds.mkdir(parents=True)
+        (proj_cmds / "component.md").write_text("# project nested")
+        user_cmds = tmp_home / ".claude" / "commands"
+        user_cmds.mkdir(parents=True)
+        (user_cmds / "component.md").write_text("# user top-level")
+
+        found = _find_command_file(str(tmp_home / "proj"), "component")
+        assert found == proj_cmds / "component.md"
+
     def test_returns_none_when_missing(self, tmp_home: Path) -> None:
         assert _find_command_file("/", "nope") is None
         assert _find_command_file("/", "") is None

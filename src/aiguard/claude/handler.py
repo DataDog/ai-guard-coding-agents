@@ -781,22 +781,25 @@ def _find_command_file(cwd: str, command: str) -> Path | None:
         for d in commands_dirs:
             _add_root(d)
 
-    # First pass: the exact relative path, guarding against components that
-    # escape the commands root (e.g. a ``..`` in the command name).
+    # Resolve per root in precedence order: within a root, an exact relative
+    # path wins, then a recursive ``<basename>.md`` fallback (a nested command
+    # like ``commands/frontend/component.md`` may be reported as just
+    # ``component``). We must finish both checks for a root before moving to the
+    # next, so a higher-precedence project command reported by basename is not
+    # beaten by a lower-precedence user/plugin command that matches the exact
+    # path — otherwise AI Guard would inspect the wrong definition.
     for root in roots:
+        # Exact relative path, guarding against components that escape the
+        # commands root (e.g. a ``..`` in the command name).
         target = (root / leaf).resolve(strict=False)
         try:
             target.relative_to(root)
         except ValueError:
-            continue
-        if target.is_file():
+            target = None
+        if target is not None and target.is_file():
             return target
 
-    # Fallback: resolve a nested command reported by its basename alone.
-    if basename:
-        for root in roots:
-            if not root.is_dir():
-                continue
+        if basename and root.is_dir():
             try:
                 for match in sorted(root.rglob(basename)):
                     if match.is_file():
