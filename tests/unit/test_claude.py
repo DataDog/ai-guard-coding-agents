@@ -769,9 +769,7 @@ class TestFetchCommandExpansion:
         assert messages[1]["tool_call_id"] == messages[0]["tool_calls"][0]["id"]
         assert "deploy body" in messages[1]["content"]
 
-    def test_slash_command_falls_back_to_skill_when_no_command_file(
-        self, tmp_home: Path
-    ) -> None:
+    def test_slash_command_falls_back_to_skill_when_no_command_file(self, tmp_home: Path) -> None:
         # A slash command whose name has no commands/<name>.md but matches a
         # skill resolves to the skill's SKILL.md.
         skill_dir = tmp_home / ".claude" / "skills" / "my-skill"
@@ -791,9 +789,12 @@ class TestFetchCommandExpansion:
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# my-skill body")
 
-        assert _fetch_command_expansion(
-            {"command_name": "my-skill", "expansion_type": "skill", "cwd": "/"}
-        ) == []
+        assert (
+            _fetch_command_expansion(
+                {"command_name": "my-skill", "expansion_type": "skill", "cwd": "/"}
+            )
+            == []
+        )
         assert _fetch_command_expansion({"command_name": "my-skill", "cwd": "/"}) == []
 
     def test_returns_empty_when_nothing_resolves(self, tmp_home: Path) -> None:

@@ -648,8 +648,7 @@ def _fetch_command_expansion(event: dict[str, Any]) -> list[Message]:
     ``tool`` message holding the expanded body, so the instructions about to be
     injected are evaluated the same way a real tool invocation would be.
 
-    Returns an empty list when no definition can be located (the expansion is
-    then evaluated from the typed line alone).
+    Returns an empty list when no definition can be located.
     """
     expansion_type = event.get("expansion_type", "")
     if expansion_type != "slash_command":
