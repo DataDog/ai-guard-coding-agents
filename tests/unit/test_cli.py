@@ -50,7 +50,7 @@ class TestHookCli:
     def test_writes_block_decision_to_stdout(
         self, transcripts: TranscriptWriter, fake_ai_guard
     ) -> None:
-        from ddtrace.appsec.ai_guard import AIGuardAbortError
+        from aiguard.client import AIGuardAbortError
 
         path = transcripts.write_main(
             "s1", [assistant_tool_use("tu1", "Bash", {"command": "rm -rf /"})]

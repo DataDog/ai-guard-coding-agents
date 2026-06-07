@@ -20,7 +20,7 @@ dependencies = [
     "pwinput>=1.0.3",
     "rich>=13",
     "semantic-version>=2.10",
-    "ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks",
+    "ddtrace>=4.10.2",
 ]
 
 [project.optional-dependencies]
@@ -34,12 +34,6 @@ test = [
 
 [project.scripts]
 ai-guard = "aiguard.cli:main"
-
-[tool.hatch.metadata]
-# Allow `pkg @ git+https://...` direct references in `project.dependencies`.
-# Required while `ddtrace` is pinned to a custom branch; revisit once the
-# AI Guard module lands in a released `ddtrace` and the pin can be a version.
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aiguard"]

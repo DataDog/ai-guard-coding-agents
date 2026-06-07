@@ -28,8 +28,8 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
-from ddtrace.appsec.ai_guard import AIGuardAbortError
 
+from aiguard.client import AIGuardAbortError
 from aiguard.hooks.hooks import hook
 from tests.transcripts import (
     TranscriptWriter,
