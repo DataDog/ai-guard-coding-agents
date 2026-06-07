@@ -26,3 +26,20 @@ updates:
     ignore:
       # Pinned to a custom branch in [tool.uv.sources]; managed manually.
       - dependency-name: "ddtrace"
+
+  # GitHub Actions used by the CI, build, and release/signing workflows. These
+  # are SHA-pinned for immutability, which means they don't get security fixes
+  # automatically — Dependabot bumps the pins (still reviewed via CODEOWNERS +
+  # branch protection) so the signing pipeline's own dependencies stay patched.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"

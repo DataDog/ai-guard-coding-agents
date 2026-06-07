@@ -23,7 +23,6 @@
       "package-name": "ai-guard",
       "extra-files": [
         "src/aiguard/__init__.py",
-        "scripts/install.sh",
         {
           "path": "uv.lock",
           "type": "toml",

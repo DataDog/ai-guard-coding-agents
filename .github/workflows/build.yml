@@ -6,26 +6,29 @@
 
 name: Build native executables
 
+# Build + sign in the tag's context so the provenance records a source ref of
+# `refs/tags/vX.Y.Z` (which install.sh pins with `--source-ref`). `release:
+# published` is the automated path — release-please publishes the Release with
+# the dd-octo-sts app token, which (unlike GITHUB_TOKEN) does trigger this
+# workflow. `push: tags` is the manual recovery path (`git push origin vX.Y.Z`);
+# creating a Release via the API doesn't emit a tag push, so the two don't
+# double-fire. `workflow_dispatch` is for CI testing (runs from a branch, so
+# publish-release is skipped — see its `if`).
 on:
+  release:
+    types: [published]
   push:
     tags:
       - "v*"
-  workflow_call:
-    inputs:
-      release_tag:
-        description: "When set, attach built artifacts to this GitHub Release tag."
-        type: string
-        required: false
-        default: ""
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # Key on the release tag (when invoked by release.yml) so a long-running
-  # main-branch build doesn't cancel the release-time build of the same code.
-  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  # Key on the ref (always the tag for release/tag-push runs) so a release
+  # build is never cancelled by an unrelated run of the same code.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -37,9 +40,16 @@ jobs:
     name: Build (${{ matrix.os }} / ${{ matrix.arch }})
     needs: test
     permissions:
-      # `write` is required only for the final `gh release upload` step;
-      # all earlier steps in this job operate read-only on the repo.
-      contents: write
+      # Read-only on the repo: this job builds, signs, and uploads CI
+      # artifacts, but never writes to the GitHub Release — that is deferred to
+      # the environment-gated `publish-release` job below.
+      contents: read
+      # Build provenance attestation: `id-token: write` lets the runner mint
+      # the OIDC token Sigstore/Fulcio signs against, and `attestations: write`
+      # records the attestation against the repo so `gh attestation verify`
+      # can find it. See the "Attest build provenance" step below.
+      id-token: write
+      attestations: write
 
     strategy:
       fail-fast: false
@@ -49,7 +59,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       # ddtrace is pinned to a git source whose tests/ tree includes paths
       # > 260 chars; without longpaths Windows checkout fails mid-clone.
@@ -62,7 +72,7 @@ jobs:
       # rather than the runner's externally-managed system Python (PEP 668).
       # Without this, `uv pip install --system` fails on ubuntu-24.04 and
       # macos-latest images that ship a marked-externally-managed Python.
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           python-version: "3.13"
 
@@ -107,75 +117,117 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}.zip").Hash.ToLower()
           "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii -NoNewline "${{ matrix.artifact }}.zip.sha256"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      # Sign the artifact's build provenance via Sigstore (keyless: the
+      # signature is bound to this workflow's OIDC identity and recorded in the
+      # Rekor transparency log — no long-lived key to manage). The checksum
+      # sidecar only proves integrity; this proves the bundle was built by this
+      # repo's workflow, which is what install.sh verifies with
+      # `gh attestation verify`.
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: dist/${{ matrix.artifact }}${{ runner.os == 'Windows' && '.zip' || '.tar.gz' }}
+
+      # Stage the Sigstore bundle next to the artifact under a deterministic
+      # name so it can ride along as a release asset. install.sh downloads it
+      # and verifies offline via `--bundle`, so a client doesn't need to be
+      # `gh auth`-logged-in to check the signature.
+      - name: Stage attestation bundle (Unix)
+        if: runner.os != 'Windows'
+        run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/${{ matrix.artifact }}.tar.gz.sigstore.json"
+
+      - name: Stage attestation bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "${{ steps.attest.outputs.bundle-path }}" "dist/${{ matrix.artifact }}.zip.sigstore.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: runner.os != 'Windows'
         with:
           name: ${{ matrix.artifact }}
           path: |
             dist/${{ matrix.artifact }}.tar.gz
             dist/${{ matrix.artifact }}.tar.gz.sha256
+            dist/${{ matrix.artifact }}.tar.gz.sigstore.json
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: runner.os == 'Windows'
         with:
           name: ${{ matrix.artifact }}
           path: |
             dist/${{ matrix.artifact }}.zip
             dist/${{ matrix.artifact }}.zip.sha256
+            dist/${{ matrix.artifact }}.zip.sigstore.json
 
-      # Attach assets to the GitHub Release when the workflow is invoked for
-      # a release — either by release.yml (reusable-workflow call with
-      # `release_tag`) or by a manual `v*` tag push (recovery path).
+      # The bootstrap install.sh is the root of trust for the whole flow — it
+      # runs the checksum and signature checks, so it must itself be pinned and
+      # verifiable rather than fetched from the mutable tip of `main`. Attest it
+      # here and publish it (in publish-release) as a versioned release asset so
+      # users can verify it before running. install.sh is platform-independent,
+      # so this runs once. Gate on the artifact name rather than the runner
+      # label so retargeting a leg's runner (e.g. ubuntu-latest -> ubuntu-24.04)
+      # can't silently stop the installer from being published.
+      - name: Attest installer script
+        id: attest_installer
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: scripts/install.sh
+
+      - name: Stage installer attestation bundle
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
+        run: cp "${{ steps.attest_installer.outputs.bundle-path }}" scripts/install.sh.sigstore.json
+
+      - name: Upload installer artifact
+        if: matrix.artifact == 'ai-guard-linux-x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: installer
+          path: |
+            scripts/install.sh
+            scripts/install.sh.sigstore.json
+
+  # Publish every built + signed asset to the GitHub Release in one place,
+  # behind the `release` environment. Required reviewers on that environment
+  # mean a release can't be published by a single identity: the provenance
+  # attestation proves *who built* an artifact, not that publishing it was
+  # *authorised* — this human gate provides that. Keeping publish out of the
+  # matrix build job also lets that job stay `contents: read`.
+  publish-release:
+    name: Publish release assets
+    needs: build
+    # Only the tag-context triggers (release / tag push) publish; a
+    # workflow_dispatch test run from a branch builds + attests but stops here.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
       - name: Resolve release tag
         id: release_tag
-        if: inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.release_tag }}" ]; then
-            tag="${{ inputs.release_tag }}"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        # github.ref is refs/tags/vX.Y.Z for both the release and tag-push paths.
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
-      - name: Attach assets to GitHub Release (Unix)
-        if: steps.release_tag.outputs.tag != '' && runner.os != 'Windows'
-        working-directory: dist
+      # Pull every per-platform artifact plus the installer into one flat
+      # directory; each was uploaded under its own name by the build matrix.
+      - name: Download built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach assets to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-        # release-please creates the Release before this job runs, so the
-        # view check normally succeeds and the create branch is a no-op.
-        # For the manual recovery path (`git push origin vX.Y.Z`) no
-        # Release exists yet — the first matrix runner creates it with
-        # auto-generated notes; later runners see it and skip. `|| true`
-        # tolerates the race where two runners try to create at once.
+        # release-please creates the Release before this workflow runs, so the
+        # view check normally succeeds. The create branch covers the manual
+        # recovery path (`git push origin vX.Y.Z`), where no Release exists yet.
         run: |
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$RELEASE_TAG" --generate-notes || true
+              --title "$RELEASE_TAG" --generate-notes
           fi
-          gh release upload "$RELEASE_TAG" \
-            "${{ matrix.artifact }}.tar.gz" \
-            "${{ matrix.artifact }}.tar.gz.sha256" \
-            --clobber --repo "$GITHUB_REPOSITORY"
-
-      - name: Attach assets to GitHub Release (Windows)
-        if: steps.release_tag.outputs.tag != '' && runner.os == 'Windows'
-        working-directory: dist
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-        run: |
-          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" `
-              --title "$env:RELEASE_TAG" --generate-notes
-            # tolerate race with another matrix runner that just created it
-            $LASTEXITCODE = 0
-          }
-          gh release upload "$env:RELEASE_TAG" `
-            "${{ matrix.artifact }}.zip" `
-            "${{ matrix.artifact }}.zip.sha256" `
-            --clobber --repo "$env:GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
