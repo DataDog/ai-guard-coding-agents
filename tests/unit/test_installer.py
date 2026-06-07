@@ -3,21 +3,20 @@
 Grouped by code surface — class layout mirrors the modules under test:
 
 * :class:`TestClaudeInstaller` (``aiguard/claude/installer.py``) — JSON merge,
-  hook install/uninstall, upstream chaining.
+  hook install/uninstall, legacy proxy-redirect cleanup.
 * :class:`TestCollectFields`   (``aiguard/installer/installer.py``) — tiered
   prompting + silent defaults in :func:`_collect_fields`.
 * :class:`TestUiSecretEntry`   (``aiguard/installer/ui.py``) — secret-prompt
   TTY-vs-pipe routing in :func:`read_secret`.
-* :class:`TestService`         (``aiguard/installer/service/``) — wrapper
-  script, templates, launchd/systemd registration, log-tail dispatch.
+* :class:`TestService`         (``aiguard/installer/service/``) — teardown of a
+  legacy proxy service (wrapper + launchd/systemd units).
 * :class:`TestCli`             (``aiguard/installer/installer.py`` CLI) —
   end-to-end ``install`` / ``uninstall`` via ``CliRunner``.
 * :class:`TestMultiAgent`      — a fake non-Claude :class:`AgentInstaller`
   plugged through the same generic pipeline.
 
-Pure utility helpers (``wait_ready``, ``atomic_write``, platform predicates)
-live in :mod:`tests.unit.test_utils` to match their home in
-:mod:`aiguard.utils`.
+Pure utility helpers (``atomic_write``, platform predicates) live in
+:mod:`tests.unit.test_utils` to match their home in :mod:`aiguard.utils`.
 """
 
 from __future__ import annotations
@@ -42,7 +41,6 @@ from aiguard.installer import ui
 from aiguard.installer.agent import AgentInstaller, Field, Tier
 from aiguard.installer.installer import install, uninstall
 from aiguard.installer.service import wrapper
-from aiguard.installer.templates import render
 from aiguard.storage import save_config
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -85,11 +83,6 @@ def stub_platform(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def wait_ready_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("aiguard.installer.installer.wait_ready", lambda *a, **kw: True)
-
-
-@pytest.fixture
 def claude_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend ``claude`` is on PATH at a version the installer accepts.
 
@@ -120,9 +113,9 @@ def claude_present(tmp_home: Path, claude_detected: None) -> Path:
 def staged_binary(tmp_home: Path) -> Path:
     """Pretend the bootstrap installer already laid out the onedir bundle.
 
-    Required for install runs that exercise service registration (the
-    production install flow refuses to wire the service if there is no
-    bundle launcher on disk for the wrapper to exec).
+    Install runs need the launcher on disk: the hooks shell out to
+    ``ai-guard hook ...``, so the install flow refuses to proceed without a
+    bundle launcher present.
     """
     paths.bundle_dir().mkdir(parents=True, exist_ok=True)
     paths.bundle_executable().write_text("#!/bin/sh\nexit 0\n")
@@ -190,11 +183,11 @@ class TestClaudeConfigDir:
         override.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(override))
 
-        updated = ClaudeInstaller().install(PROXY)
+        updated = ClaudeInstaller().install()
 
         assert updated == [override / "settings.json"]
         data = _read(override / "settings.json")
-        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
+        assert set(data["hooks"].keys()) == set(HOOK_EVENTS)
         # The default ~/.claude/settings.json must stay untouched.
         assert not (tmp_home / ".claude" / "settings.json").exists()
 
@@ -227,12 +220,13 @@ class TestClaudeInstaller:
     def test_install_on_missing_file_creates_it(self, tmp_home: Path) -> None:
         _make_claude_dir(tmp_home)
         settings_path = paths.claude_settings_path()
-        updated = ClaudeInstaller().install(PROXY)
+        updated = ClaudeInstaller().install()
 
         assert updated == [settings_path]
         data = _read(settings_path)
-        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
         assert set(data["hooks"].keys()) == set(HOOK_EVENTS)
+        # In-process hooks: no proxy redirect is written.
+        assert "env" not in data
 
     def test_install_preserves_unrelated_keys(self, tmp_home: Path) -> None:
         settings = _make_claude_dir(tmp_home) / "settings.json"
@@ -245,53 +239,78 @@ class TestClaudeInstaller:
             )
         )
 
-        ClaudeInstaller().install(PROXY)
+        ClaudeInstaller().install()
         data = _read(settings)
 
         assert data["permissions"] == {"allow": ["Bash"]}
         assert data["model"] == "claude-sonnet-4-6"
-        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
+        assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
 
-    def test_install_overwrites_pre_existing_anthropic_base_url(self, tmp_home: Path) -> None:
-        """install() points env.ANTHROPIC_BASE_URL at the proxy regardless of prior value.
-
-        The user's pre-existing upstream is surfaced separately via
-        :meth:`ClaudeInstaller.env_fields` (the prompt picks it up as the
-        default for ``DD_AI_GUARD_ANTHROPIC_UPSTREAM``) and ultimately
-        restored from ``config.env`` on uninstall.
-        """
+    def test_install_leaves_users_own_base_url_untouched(self, tmp_home: Path) -> None:
+        """A user's own ANTHROPIC_BASE_URL (not our proxy) must survive install."""
         settings = _make_claude_dir(tmp_home) / "settings.json"
         settings.write_text(
-            json.dumps(
-                {
-                    "env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"},
-                }
-            )
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"}})
         )
 
-        ClaudeInstaller().install(PROXY)
+        ClaudeInstaller().install()
         data = _read(settings)
-        assert data["env"]["ANTHROPIC_BASE_URL"] == PROXY
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://upstream.example/v1"
 
-    def test_detect_upstream_finds_pre_existing_value(self, tmp_home: Path) -> None:
+    def test_install_strips_legacy_proxy_redirect(self, tmp_home: Path) -> None:
+        """A redirect left by an older proxy-based install is removed on install."""
         settings = _make_claude_dir(tmp_home) / "settings.json"
-        settings.write_text(
-            json.dumps(
-                {
-                    "env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"},
-                }
-            )
-        )
-        assert ClaudeInstaller()._detect_upstream() == "https://upstream.example/v1"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
 
-    def test_detect_upstream_returns_none_when_unset(self, tmp_home: Path) -> None:
-        _make_claude_dir(tmp_home)
-        assert ClaudeInstaller()._detect_upstream() is None
+        ClaudeInstaller().install()
+        data = _read(settings)
+        assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
+        assert set(data["hooks"].keys()) == set(HOOK_EVENTS)
+
+    def test_install_strips_legacy_custom_proxy_redirect(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upgrade from a proxy install with a NON-default host/port.
+
+        ``config.env`` no longer carries the proxy host/port (and ``install``
+        rewrites it before the redirect is stripped), so the only place the
+        custom value survives is the environment — which the CLI loads from the
+        old ``config.env`` at startup. ``_configured_proxy_url`` must read it
+        from there, else the stale redirect (pointing at the dead custom proxy)
+        is left behind.
+        """
+        monkeypatch.setenv("DD_AI_GUARD_PROXY_HOST", "0.0.0.0")
+        monkeypatch.setenv("DD_AI_GUARD_PROXY_PORT", "41234")
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://0.0.0.0:41234"}}))
+
+        ClaudeInstaller().install()
+        data = _read(settings)
+        assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
+
+    def test_install_restores_captured_upstream_from_env(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upgrade where the old install captured the user's real upstream.
+
+        ``config.env`` no longer carries ``DD_AI_GUARD_ANTHROPIC_UPSTREAM`` and
+        ``install`` rewrites the file before the redirect is stripped, so the
+        captured upstream survives only in the environment (loaded by the CLI
+        from the old ``config.env``). It must be restored over the proxy
+        redirect, not dropped.
+        """
+        monkeypatch.setenv("DD_AI_GUARD_ANTHROPIC_UPSTREAM", "https://upstream.example/v1")
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
+
+        ClaudeInstaller().install()
+        data = _read(settings)
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://upstream.example/v1"
 
     def test_reinstall_is_idempotent(self, tmp_home: Path) -> None:
         _make_claude_dir(tmp_home)
-        ClaudeInstaller().install(PROXY)
-        ClaudeInstaller().install(PROXY)
+        ClaudeInstaller().install()
+        ClaudeInstaller().install()
 
         data = _read(paths.claude_settings_path())
         # Each hook event still has exactly one ai-guard entry.
@@ -305,7 +324,7 @@ class TestClaudeInstaller:
         settings = _make_claude_dir(tmp_home) / "settings.json"
         settings.write_text(json.dumps({"hooks": {"PreToolUse": [user_hook]}}))
 
-        ClaudeInstaller().install(PROXY)
+        ClaudeInstaller().install()
         data = _read(settings)
 
         pretooluse = data["hooks"]["PreToolUse"]
@@ -325,7 +344,7 @@ class TestClaudeInstaller:
         )
 
         agent = ClaudeInstaller()
-        agent.install(PROXY)
+        agent.install()
         agent.uninstall()
 
         data = _read(settings)
@@ -335,12 +354,11 @@ class TestClaudeInstaller:
         }
 
     def test_uninstall_restores_chained_upstream_from_config(self, tmp_home: Path) -> None:
-        """``DD_AI_GUARD_ANTHROPIC_UPSTREAM`` in config.env is what uninstall reads.
+        """A legacy proxy redirect is replaced by the upstream captured in config.
 
-        The install flow captures the user's pre-existing upstream into
-        ``config.env`` (via the prompt default), so the uninstall path can be
-        purely settings-driven and the agent module never has to remember the
-        original value itself.
+        Older installs saved the user's pre-existing upstream into ``config.env``
+        as ``DD_AI_GUARD_ANTHROPIC_UPSTREAM``; uninstall restores it when it
+        strips the proxy redirect.
         """
         settings = _make_claude_dir(tmp_home) / "settings.json"
         settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
@@ -351,20 +369,19 @@ class TestClaudeInstaller:
         data = _read(settings)
         assert data == {"env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"}}
 
-    def test_uninstall_removes_env_key_when_no_original(self, tmp_home: Path) -> None:
-        _make_claude_dir(tmp_home)
-        agent = ClaudeInstaller()
-        agent.install(PROXY)
-        agent.uninstall()
+    def test_uninstall_removes_legacy_redirect_when_no_original(self, tmp_home: Path) -> None:
+        settings = _make_claude_dir(tmp_home) / "settings.json"
+        settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": PROXY}}))
+
+        ClaudeInstaller().uninstall()
 
         data = _read(paths.claude_settings_path())
-        # The whole env block was synthesised by us, so it should be gone too.
+        # Synthesised env block with only our redirect → gone entirely.
         assert "env" not in data
-        assert "hooks" not in data
 
     def test_is_installed_true_when_hooks_reference_ai_guard(self, tmp_home: Path) -> None:
         _make_claude_dir(tmp_home)
-        ClaudeInstaller().install(PROXY)
+        ClaudeInstaller().install()
 
         assert ClaudeInstaller().is_installed() is True
 
@@ -485,7 +502,6 @@ class TestCollectFields:
         # Tier-1/2 defaults are filled in even without --advanced.
         assert values["DD_SITE"] == "datadoghq.com"
         assert values["DD_ENV"] == "prod"
-        assert values["DD_AI_GUARD_PROXY_PORT"] == "29279"
         # Silent defaults are always written.
         assert values["DD_TRACE_ENABLED"] == "True"
         assert values["DD_AI_GUARD_ENABLED"] == "True"
@@ -560,14 +576,9 @@ class TestCollectFields:
         assert "my-secret-api" not in values["__stdout__"]
         assert "my-secret-app" not in values["__stdout__"]
 
-    def test_advanced_prefills_detected_upstream_for_claude(self, tmp_home: Path) -> None:
-        # ClaudeInstaller.env_fields reads settings.json directly and uses any
-        # pre-existing ANTHROPIC_BASE_URL as the default for the prompt field.
-        settings = _make_claude_dir(tmp_home) / "settings.json"
-        settings.write_text(
-            json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"}})
-        )
-
+    def test_claude_config_dir_passthrough_omitted_when_unset(self, tmp_home: Path) -> None:
+        # ClaudeInstaller's only env field is the CLAUDE_CONFIG_DIR passthrough,
+        # which is saved only when the user actually set it.
         values = _run_prompt(
             {
                 "advanced": True,
@@ -576,21 +587,7 @@ class TestCollectFields:
                 "agents": [ClaudeInstaller()],
             }
         )
-        assert values["DD_AI_GUARD_ANTHROPIC_UPSTREAM"] == "https://upstream.example/v1"
-
-    def test_anthropic_upstream_field_absent_without_claude(self) -> None:
-        # Without claude in the agents list, DD_AI_GUARD_ANTHROPIC_UPSTREAM is
-        # not a prompt-list field and stays out of the resulting config.env
-        # (the proxy will fall back to its hard-coded api.anthropic.com).
-        values = _run_prompt(
-            {
-                "advanced": True,
-                "non_interactive": True,
-                "env": {"DD_API_KEY": "k", "DD_APP_KEY": "a", "DD_SERVICE": "s"},
-                "agents": [],
-            }
-        )
-        assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" not in values
+        assert "CLAUDE_CONFIG_DIR" not in values
 
     def test_env_overrides_default_in_interactive(self) -> None:
         # Env-supplied values surface as the prompt default (masked for secrets),
@@ -724,122 +721,22 @@ class TestUiSecretEntry:
 
 
 class TestService:
-    def test_wrapper_script_contents(self, tmp_home: Path) -> None:
-        wrapper.write()
-        target = paths.wrapper_path()
-        text = target.read_text()
-        assert str(paths.config_env_path()) in text
-        assert str(paths.binary_path()) in text
-        # ``exec`` (not a pipeline) so the proxy is the init system's direct
-        # child — required for launchd / systemd socket-activation handoff.
-        assert "exec" in text
-        assert "| /usr/bin/logger" not in text
-        assert target.stat().st_mode & 0o777 == 0o755
+    """Only teardown remains: ai-guard no longer installs a proxy service, but
+    must still tear down one left behind by an older install."""
 
     def test_wrapper_remove_is_safe_when_missing(self, tmp_home: Path) -> None:
-        # Nothing to remove yet; should not raise.
+        wrapper.remove()  # nothing to remove yet; must not raise
+
+    def test_wrapper_remove_deletes_existing(self, tmp_home: Path) -> None:
+        target = paths.wrapper_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/bin/sh\n")
+
         wrapper.remove()
 
-    def test_launchd_plist_template_renders(self) -> None:
-        out = render(
-            "com.datadoghq.ai-guard.plist.in",
-            LABEL="com.datadoghq.ai-guard",
-            WRAPPER="/home/u/.local/bin/ai-guard-service",
-            HOME="/home/u",
-            SOCKET_NAME="Listener",
-            HOST="127.0.0.1",
-            PORT="29279",
-        )
-        assert "<key>Label</key>" in out
-        assert "com.datadoghq.ai-guard" in out
-        assert "/home/u/.local/bin/ai-guard-service" in out
-        # Socket-activated: launchd opens the port and hands it to the
-        # service on demand. No RunAtLoad / KeepAlive should remain.
-        assert "<key>Sockets</key>" in out
-        assert "<key>Listener</key>" in out
-        assert "<string>127.0.0.1</string>" in out
-        assert "<string>29279</string>" in out
-        assert "RunAtLoad" not in out
-        assert "KeepAlive" not in out
-        # No log-file paths land in the plist — service output is captured by
-        # the proxy's own rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
-        assert "StandardOutPath" not in out
-        assert "StandardErrorPath" not in out
+        assert not target.exists()
 
-    def test_systemd_unit_template_renders(self) -> None:
-        out = render(
-            "ai-guard.service.in",
-            WRAPPER="/home/u/.local/bin/ai-guard-service",
-            SOCKET_NAME="ai-guard.socket",
-        )
-        assert "ExecStart=/home/u/.local/bin/ai-guard-service" in out
-        # No StandardOutput/StandardError stanza — service output is captured
-        # by the proxy's own rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
-        assert "StandardOutput" not in out
-        assert "StandardError" not in out
-        assert "Restart=on-failure" in out
-        # Service is socket-activated; the socket unit is what gets enabled,
-        # so the service no longer carries [Install]/WantedBy.
-        assert "Requires=ai-guard.socket" in out
-        assert "WantedBy" not in out
-        assert "append:" not in out
-
-    def test_systemd_socket_template_renders(self) -> None:
-        out = render(
-            "ai-guard.socket.in",
-            LISTEN_STREAM="127.0.0.1:29279",
-            SERVICE_NAME="ai-guard.service",
-        )
-        assert "[Socket]" in out
-        assert "ListenStream=127.0.0.1:29279" in out
-        assert "Service=ai-guard.service" in out
-        assert "WantedBy=sockets.target" in out
-
-    def test_launchd_install_writes_no_log_path(
-        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Regression: the plist must not point launchd at any on-disk log file.
-
-        Service output is captured by the proxy's own rotating logger at
-        ``$XDG_STATE_HOME/ai-guard/ai-guard.log``. A bare log file path in the plist would
-        re-introduce a custom rotation surface we've explicitly removed.
-        """
-        from aiguard.installer.service import launchd
-
-        def fake_run(args, **kwargs):
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(launchd.subprocess, "run", fake_run)
-        monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
-        launchd.install("127.0.0.1", 29279)
-
-        plist = paths.launchd_plist_path().read_text()
-        # The proxy's own app-log path must NOT appear in the plist — that file
-        # belongs to the rotating handler, not launchd.
-        assert str(paths.log_file_path()) not in plist
-        assert "StandardOutPath" not in plist
-        assert "StandardErrorPath" not in plist
-
-    def test_systemd_install_writes_no_log_path(
-        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from aiguard.installer.service import systemd_user
-
-        def fake_run(args, **kwargs):
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install("127.0.0.1", 29279)
-
-        unit = paths.systemd_unit_path().read_text()
-        # No log routing in the unit — output is captured by the proxy's own
-        # rotating logger at ``$XDG_STATE_HOME/ai-guard/ai-guard.log``.
-        assert "StandardOutput" not in unit
-        assert "StandardError" not in unit
-        assert str(paths.log_file_path()) not in unit
-        assert "append:" not in unit
-
-    def test_systemd_install_calls_systemctl(
+    def test_systemd_uninstall_stops_disables_and_removes_units(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from aiguard.installer.service import systemd_user
@@ -851,16 +748,31 @@ class TestService:
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install("127.0.0.1", 29279)
 
-        # Both units land on disk, and systemd enables the SOCKET (not the
-        # service) so requests trigger socket activation.
-        assert paths.systemd_unit_path().exists()
-        assert paths.systemd_socket_path().exists()
-        assert ["systemctl", "--user", "daemon-reload"] in calls
-        assert ["systemctl", "--user", "enable", "--now", "ai-guard.socket"] in calls
+        # An older install left units behind.
+        paths.systemd_unit_path().parent.mkdir(parents=True, exist_ok=True)
+        paths.systemd_unit_path().write_text("[Service]\n")
+        paths.systemd_socket_path().write_text("[Socket]\n")
 
-    def test_launchd_install_calls_launchctl(
+        systemd_user.uninstall()
+
+        assert not paths.systemd_unit_path().exists()
+        assert not paths.systemd_socket_path().exists()
+        assert ["systemctl", "--user", "disable", "--now", "ai-guard.socket"] in calls
+
+    def test_systemd_uninstall_is_safe_when_units_missing(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aiguard.installer.service import systemd_user
+
+        monkeypatch.setattr(
+            systemd_user.subprocess,
+            "run",
+            lambda *a, **kw: MagicMock(returncode=1, stdout="", stderr=""),
+        )
+        systemd_user.uninstall()  # no units on disk; must not raise
+
+    def test_launchd_uninstall_boots_out_and_removes_plist(
         self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from aiguard.installer.service import launchd
@@ -873,61 +785,30 @@ class TestService:
 
         monkeypatch.setattr(launchd.subprocess, "run", fake_run)
         monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
-        launchd.install("127.0.0.1", 29279)
 
-        assert paths.launchd_plist_path().exists()
-        # Bootout-then-bootstrap pattern.
+        paths.launchd_plist_path().parent.mkdir(parents=True, exist_ok=True)
+        paths.launchd_plist_path().write_text("<plist/>")
+
+        launchd.uninstall()
+
+        assert not paths.launchd_plist_path().exists()
         assert any(c[:2] == ["launchctl", "bootout"] for c in calls)
-        assert any(c[:2] == ["launchctl", "bootstrap"] for c in calls)
 
-    def test_systemd_socket_uses_custom_host_port(
-        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    def test_manager_uninstall_clears_backend_and_wrapper(
+        self, tmp_home: Path, stub_platform: None
     ) -> None:
-        """A non-default proxy host/port must reach the rendered socket file —
-        otherwise the agent talks to the new URL but the listener stays on
-        the default and connections fail."""
-        from aiguard.installer.service import systemd_user
+        """``service_manager.uninstall`` removes the backend units and wrapper."""
+        from aiguard.installer.service import manager as service_manager
 
-        def fake_run(*args, **kwargs):
-            return MagicMock(returncode=0)
+        paths.wrapper_path().parent.mkdir(parents=True, exist_ok=True)
+        paths.wrapper_path().write_text("#!/bin/sh\n")
+        paths.systemd_unit_path().parent.mkdir(parents=True, exist_ok=True)
+        paths.systemd_unit_path().write_text("[Service]\n")
 
-        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install("0.0.0.0", 41234)
+        service_manager.uninstall()
 
-        socket_unit = paths.systemd_socket_path().read_text()
-        assert "ListenStream=0.0.0.0:41234" in socket_unit
-
-    def test_systemd_socket_brackets_ipv6_host(
-        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """systemd requires [addr]:port for IPv6; a bare ``::`` would render
-        ``ListenStream=:::29279`` and fail to parse."""
-        from aiguard.installer.service import systemd_user
-
-        def fake_run(*args, **kwargs):
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(systemd_user.subprocess, "run", fake_run)
-        systemd_user.install("::", 29279)
-
-        socket_unit = paths.systemd_socket_path().read_text()
-        assert "ListenStream=[::]:29279" in socket_unit
-
-    def test_launchd_plist_uses_custom_host_port(
-        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from aiguard.installer.service import launchd
-
-        def fake_run(*args, **kwargs):
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(launchd.subprocess, "run", fake_run)
-        monkeypatch.setattr(launchd.os, "getuid", lambda: 501)
-        launchd.install("0.0.0.0", 41234)
-
-        plist = paths.launchd_plist_path().read_text()
-        assert "0.0.0.0" in plist
-        assert "41234" in plist
+        assert not paths.wrapper_path().exists()
+        assert not paths.systemd_unit_path().exists()
 
 
 # =============================================================================
@@ -940,7 +821,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -961,20 +841,21 @@ class TestCli:
         assert "DD_API_KEY=test-api" in content
         assert "DD_APP_KEY=test-app" in content
 
-        # Claude settings now point at the proxy and carry our hooks.
+        # Claude settings carry our hooks but no proxy redirect (in-process hooks).
         data = json.loads(claude_present.read_text())
-        assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:29279"
         assert "PreToolUse" in data["hooks"]
+        assert "ANTHROPIC_BASE_URL" not in data.get("env", {})
 
-        # Service unit + wrapper exist.
-        assert paths.systemd_unit_path().exists()
-        assert paths.wrapper_path().exists()
+        # No proxy service is registered any more.
+        assert not paths.systemd_unit_path().exists()
+        assert not paths.wrapper_path().exists()
+        # The launcher binary is still placed so the hook command resolves.
+        assert paths.binary_path().exists()
 
     def test_install_stores_secrets_in_keychain_when_available(
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         fake_keychain: dict[str, str],
@@ -1001,7 +882,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         fake_keychain: dict[str, str],
@@ -1010,12 +890,15 @@ class TestCli:
         """A pre-existing config.env with secrets (an upgrade from the
         file-only world) must have them lifted into the keychain and stripped
         from the file on the next install."""
-        from aiguard.storage import save_config
+        from aiguard.storage import load_config, save_config
 
         save_config({"DD_API_KEY": "old-api", "DD_APP_KEY": "old-app", "DD_SERVICE": "svc"})
-        # No DD_* in the env: values come from the stored config.env.
+        # No DD_* exported. The CLI loads config.env into the environment before
+        # dispatching install; replay that here (via monkeypatch so it's restored).
         for key in ("DD_API_KEY", "DD_APP_KEY", "DD_SERVICE"):
             monkeypatch.delenv(key, raising=False)
+        for key, value in load_config().items():
+            monkeypatch.setenv(key, value)
 
         result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert result.exit_code == 0, result.output + str(result.exception or "")
@@ -1029,7 +912,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         fake_keychain: dict[str, str],
@@ -1037,6 +919,8 @@ class TestCli:
     ) -> None:
         """Re-running --non-interactive install with no env vars must succeed by
         reading the secrets back out of the keychain (they're not in config.env)."""
+        from aiguard import keychain
+
         monkeypatch.setenv("DD_API_KEY", "kc-api")
         monkeypatch.setenv("DD_APP_KEY", "kc-app")
         monkeypatch.setenv("DD_SERVICE", "svc")
@@ -1045,6 +929,8 @@ class TestCli:
 
         monkeypatch.delenv("DD_API_KEY")
         monkeypatch.delenv("DD_APP_KEY")
+        # The CLI loads keychain secrets into the environment before install.
+        keychain.load_into_env()
         second = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert second.exit_code == 0, second.output + str(second.exception or "")
         assert fake_keychain == {"DD_API_KEY": "kc-api", "DD_APP_KEY": "kc-app"}
@@ -1053,7 +939,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         fake_keychain: dict[str, str],
@@ -1070,15 +955,15 @@ class TestCli:
         assert uninst.exit_code == 0, uninst.output + str(uninst.exception or "")
         assert fake_keychain == {}
 
-    def test_install_detects_and_chains_upstream(
+    def test_install_leaves_users_own_base_url(
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         staged_binary: Path,
         claude_detected: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """A user's own ANTHROPIC_BASE_URL must survive install untouched."""
         settings = tmp_home / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(
@@ -1092,15 +977,13 @@ class TestCli:
         result = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert result.exit_code == 0, result.output + str(result.exception or "")
 
-        env_content = paths.config_env_path().read_text()
-        assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" in env_content
-        assert "https://upstream.example/v1" in env_content
+        data = json.loads(settings.read_text())
+        assert data["env"]["ANTHROPIC_BASE_URL"] == "https://upstream.example/v1"
 
     def test_install_persists_claude_config_dir(
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_detected: None,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1136,7 +1019,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1158,7 +1040,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1213,7 +1094,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1261,16 +1141,19 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Re-running --non-interactive install with no env vars must succeed.
 
-        Stored config.env is the source of truth on re-run; the user should
-        not have to re-export their secrets every time they re-install.
+        Stored config.env is the source of truth on re-run; the user should not
+        have to re-export their secrets every time they re-install. The CLI
+        loads config.env into the environment before the command runs, which we
+        simulate here with ``storage.load_into_environ()``.
         """
+        from aiguard import storage
+
         monkeypatch.setenv("DD_API_KEY", "first-api")
         monkeypatch.setenv("DD_APP_KEY", "first-app")
         monkeypatch.setenv("DD_SERVICE", "first-service")
@@ -1279,6 +1162,10 @@ class TestCli:
 
         monkeypatch.delenv("DD_API_KEY")
         monkeypatch.delenv("DD_APP_KEY")
+        # The CLI loads config.env into the environment before dispatching the
+        # command; replay that here (via monkeypatch so it's restored on teardown).
+        for key, value in storage.load_config().items():
+            monkeypatch.setenv(key, value)
         second = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
         assert second.exit_code == 0, second.output + str(second.exception or "")
 
@@ -1290,7 +1177,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         staged_binary: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1308,46 +1194,10 @@ class TestCli:
         assert "DD_API_KEY=rotated-api" in content
         assert "DD_APP_KEY=first-app" in content
 
-    def test_reinstall_preserves_chained_upstream_in_config(
-        self,
-        tmp_home: Path,
-        stub_platform: None,
-        wait_ready_ok: None,
-        staged_binary: Path,
-        claude_detected: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """After re-install, config.env must still hold the user's original upstream.
-
-        The agent's settings.json already points at our proxy by then, so a
-        naive re-detection would compute an empty upstream — but the prompt
-        layer reuses the stored ``DD_AI_GUARD_ANTHROPIC_UPSTREAM`` from
-        config.env, which uninstall later reads back to restore the chain.
-        """
-        settings = tmp_home / ".claude" / "settings.json"
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(
-            json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://upstream.example/v1"}})
-        )
-
-        monkeypatch.setenv("DD_API_KEY", "k")
-        monkeypatch.setenv("DD_APP_KEY", "a")
-        monkeypatch.setenv("DD_SERVICE", "ai-guard")
-        first = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
-        assert first.exit_code == 0
-
-        second = CliRunner().invoke(install, ["--non-interactive", "--no-color"])
-        assert second.exit_code == 0
-
-        content = paths.config_env_path().read_text()
-        assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" in content
-        assert "https://upstream.example/v1" in content
-
     def test_install_missing_secret_exits_non_zero(
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1362,7 +1212,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1389,7 +1238,6 @@ class TestCli:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         claude_present: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -1424,8 +1272,6 @@ class TestCli:
         # And the user-facing launcher on PATH is a symlink to the bundled exec.
         assert paths.binary_path().is_symlink()
         assert paths.binary_path().resolve() == paths.bundle_executable().resolve()
-        # The wrapper still references the stable user-facing path.
-        assert str(paths.binary_path()) in paths.wrapper_path().read_text()
 
 
 # =============================================================================
@@ -1478,9 +1324,8 @@ class FakeAgent(AgentInstaller):
             ),
         ]
 
-    def install(self, proxy_url: str) -> list[Path]:
+    def install(self) -> list[Path]:
         data = self._load()
-        data[self.UPSTREAM_KEY] = proxy_url
         data.setdefault("hooks", []).append({"command": "ai-guard hook fake event"})
         self._write(data)
         return [self._settings_path]
@@ -1488,19 +1333,12 @@ class FakeAgent(AgentInstaller):
     def uninstall(self) -> list[Path]:
         if not self._settings_path.exists():
             return []
-        from aiguard.storage import load_config
-
         data = self._load()
         data["hooks"] = [
             h for h in data.get("hooks", []) if not h.get("command", "").startswith("ai-guard hook")
         ]
         if not data["hooks"]:
             data.pop("hooks", None)
-        prior = load_config().get("DD_AI_GUARD_FAKE_UPSTREAM", "")
-        if prior:
-            data[self.UPSTREAM_KEY] = prior
-        else:
-            data.pop(self.UPSTREAM_KEY, None)
         self._write(data)
         return [self._settings_path]
 
@@ -1519,20 +1357,19 @@ class TestMultiAgent:
         self,
         tmp_home: Path,
         stub_platform: None,
-        wait_ready_ok: None,
         register_fake_agent: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A non-Claude agent runs through the full install + uninstall pipeline."""
         # Set up the fake agent's marker dir so `detect()` succeeds, and seed a
-        # pre-existing upstream so we can verify chaining + restore work generically.
+        # pre-existing value so we can verify install leaves unrelated keys alone.
         fake_cfg = tmp_home / ".fake-agent" / "config.json"
         fake_cfg.parent.mkdir(parents=True, exist_ok=True)
         fake_cfg.write_text(json.dumps({"FAKE_API_BASE_URL": "https://my-fake.example/v1"}))
 
-        # Pre-stage a fake onedir bundle at the expected location; install
-        # refuses to wire the service otherwise (production install would
-        # normally have the bootstrap script drop the bundle in place first).
+        # Pre-stage a fake onedir bundle so the launcher is in place (the hook
+        # command needs it on PATH); production installs get this from the
+        # bootstrap script.
         paths.bundle_dir().mkdir(parents=True, exist_ok=True)
         paths.bundle_executable().write_text("#!/bin/sh\nexit 0\n")
         paths.bundle_executable().chmod(0o755)
@@ -1542,7 +1379,6 @@ class TestMultiAgent:
         monkeypatch.setenv("DD_API_KEY", "k")
         monkeypatch.setenv("DD_APP_KEY", "a")
         monkeypatch.setenv("DD_SERVICE", "ai-guard")
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
 
         runner = CliRunner()
         result = runner.invoke(
@@ -1551,21 +1387,17 @@ class TestMultiAgent:
         )
         assert result.exit_code == 0, result.output + str(result.exception or "")
 
-        # The fake agent contributed its own upstream Field via env_fields(),
-        # so its var lands in config.env with the detected upstream pre-filled
-        # as the default. Crucially, the Anthropic-specific var does NOT
-        # appear because claude isn't in the agent list.
+        # The fake agent contributed its own tier-2 Field via env_fields(), so
+        # its var lands in config.env with the value pre-filled as the default.
         env_content = paths.config_env_path().read_text()
         assert "DD_AI_GUARD_FAKE_UPSTREAM=https://my-fake.example/v1" in env_content
-        assert "DD_AI_GUARD_ANTHROPIC_UPSTREAM" not in env_content
 
-        # Hooks landed in the fake agent's config and the proxy URL was wired up.
+        # Hooks landed in the fake agent's config; unrelated keys are untouched.
         data = json.loads(fake_cfg.read_text())
-        assert data["FAKE_API_BASE_URL"] == "http://127.0.0.1:29279"
+        assert data["FAKE_API_BASE_URL"] == "https://my-fake.example/v1"
         assert data["hooks"] == [{"command": "ai-guard hook fake event"}]
 
-        # Uninstall reverses everything via the same generic plumbing — the
-        # captured upstream comes back from config.env.
+        # Uninstall reverses everything via the same generic plumbing.
         result = runner.invoke(installer_cli.uninstall, ["--yes", "--no-color"])
         assert result.exit_code == 0, result.output + str(result.exception or "")
 

@@ -28,8 +28,8 @@ attached.
 ## Installation
 
 A single command bootstraps the CLI on Linux and macOS — it downloads the latest signed binary, verifies its SHA-256
-checksum, and registers a per-user background service. Everything lives under `$HOME`: no root, no `sudo`, no
-system-wide changes.
+checksum, and wires AI Guard hooks into your coding agent. The hooks run AI Guard in-process when the agent invokes
+them; there is no background service. Everything lives under `$HOME`: no root, no `sudo`, no system-wide changes.
 
 ### Quick start
 
@@ -42,10 +42,10 @@ Windows support is coming via `install.ps1`.
 
 ### Supported platforms
 
-| Platform | Architectures           | Background service       |
-|----------|-------------------------|--------------------------|
-| Linux    | `x86_64`, `arm64`       | `systemd --user` unit    |
-| macOS    | Apple Silicon (`arm64`) | `launchd` LaunchAgent    |
+| Platform | Architectures           |
+|----------|-------------------------|
+| Linux    | `x86_64`, `arm64`       |
+| macOS    | Apple Silicon (`arm64`) |
 
 ### Requirements
 
@@ -54,30 +54,24 @@ The bootstrap script checks for these upfront and exits with a clear error if an
 - **HTTP downloader** — `curl` or `wget`
 - **Checksum tool** — `sha256sum` or `shasum`
 - **Archive tools** — `tar` and `mktemp`
-- **Service manager** — `systemctl --user` on Linux, `launchctl` on macOS
 
 ### What gets installed
 
 Every path the installer creates or modifies is listed below — nothing else on your machine is touched.
 
-| Path                                                               | Purpose                                                      | OS      | Agent         |
-|--------------------------------------------------------------------|--------------------------------------------------------------|---------|---------------|
-| `~/.local/share/ai-guard/`                                         | PyInstaller onedir bundle (launcher + `_internal/`).         | `*`     | `*`           |
-| `~/.local/bin/ai-guard`                                            | Symlink to the bundle launcher.                              | `*`     | `*`           |
-| `~/.local/bin/ai-guard-service`                                    | Wrapper script invoked by launchd / systemd.                 | `*`     | `*`           |
-| `${XDG_STATE_HOME:-~/.local/state}/ai-guard/ai-guard.log`          | Rotating application log.                                    | `*`     | `*`           |
-| `${XDG_STATE_HOME:-~/.local/state}/ai-guard/<agent>/<session_id>/` | Per-session message history used to build AI Guard requests. | `*`     | `*`           |
-| `${XDG_CONFIG_HOME:-~/.config}/ai-guard/config.env`                | Persisted configuration values (mode `0600`).                | `*`     | `*`           |
-| `${XDG_CONFIG_HOME:-~/.config}/systemd/user/ai-guard.socket`       | Listening socket, enabled with `systemctl --user`.           | `linux` | `*`           |
-| `${XDG_CONFIG_HOME:-~/.config}/systemd/user/ai-guard.service`      | Service activated on demand by `ai-guard.socket`.            | `linux` | `*`           |
-| `~/Library/LaunchAgents/com.datadoghq.ai-guard.plist`              | LaunchAgent loaded via `launchctl bootstrap`.                | `macOS` | `*`           |
-| `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`                    | Hook block under `hooks.*` plus `env.ANTHROPIC_BASE_URL`.    | `*`     | `Claude Code` |
+| Path                                                      | Purpose                                                       | Agent         |
+|-----------------------------------------------------------|---------------------------------------------------------------|---------------|
+| `~/.local/share/ai-guard/`                                | PyInstaller onedir bundle (launcher + `_internal/`).          | `*`           |
+| `~/.local/bin/ai-guard`                                   | Symlink to the bundle launcher — the command the hooks call.  | `*`           |
+| `${XDG_STATE_HOME:-~/.local/state}/ai-guard/ai-guard.log` | Rotating application log.                                     | `*`           |
+| `${XDG_CONFIG_HOME:-~/.config}/ai-guard/config.env`       | Persisted configuration values (mode `0600`).                 | `*`           |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`           | Hook block under `hooks.*`.                                   | `Claude Code` |
 
 Paths follow the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) and honour
 `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set.
 
-Service output is captured by the proxy's rotating logger at `~/.local/state/ai-guard/ai-guard.log`, including uncaught
-Python exceptions.
+The hooks read their configuration (Datadog credentials, `DD_AI_GUARD_BLOCK`, log settings) from `config.env` and log to
+`~/.local/state/ai-guard/ai-guard.log` (rotating), including uncaught Python exceptions.
 
 ### Uninstall
 
@@ -85,7 +79,7 @@ Python exceptions.
 ai-guard uninstall
 ```
 
-Stops and unregisters the service, restores the original coding agent config, and removes all AI Guard artifacts.
+Removes the AI Guard hooks from your coding agent config and deletes all AI Guard artifacts.
 `~/.local/state/ai-guard/ai-guard.log*` is preserved as a forensic trail.
 
 ## Privacy notice

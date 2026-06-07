@@ -2,10 +2,10 @@
 
 Merges the ai-guard hook block into Claude Code's ``settings.json``
 (``~/.claude/settings.json`` by default, or under ``$CLAUDE_CONFIG_DIR`` when
-set — see :func:`aiguard.paths.claude_config_dir`) and points
-``env.ANTHROPIC_BASE_URL`` at the local proxy. Pre-existing
-``ANTHROPIC_BASE_URL`` values are reported back so the installer can use them
-as the proxy's upstream and restore them on uninstall.
+set — see :func:`aiguard.paths.claude_config_dir`). The hooks run ai-guard
+in-process, so we no longer point ``env.ANTHROPIC_BASE_URL`` at a local proxy.
+Older versions did; install and uninstall both strip that legacy redirect when
+they find it (restoring any upstream the user had before).
 """
 
 from __future__ import annotations
@@ -62,16 +62,49 @@ def _is_ai_guard_entry(entry: dict) -> bool:
 
 
 def _configured_proxy_url() -> str:
-    """The proxy URL the installer would currently write into agent settings.
+    """The local proxy URL an older ai-guard install would have written.
 
-    Reads ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` from
-    ``config.env`` (falling back to the constants), so callers can compare
-    against ``env.ANTHROPIC_BASE_URL`` to decide whether an entry is ours.
+    Resolves ``DD_AI_GUARD_PROXY_HOST`` / ``DD_AI_GUARD_PROXY_PORT`` via
+    :func:`_legacy_config_value`, so callers can compare against
+    ``env.ANTHROPIC_BASE_URL`` to decide whether a redirect is ours.
     """
-    config = storage.load_config()
-    host = config.get("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
-    port = config.get("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
+    host = _legacy_config_value("DD_AI_GUARD_PROXY_HOST", AIGuardConstants.PROXY_HOST_DEFAULT)
+    port = _legacy_config_value("DD_AI_GUARD_PROXY_PORT", str(AIGuardConstants.PROXY_PORT_DEFAULT))
     return f"http://{host}:{port}"
+
+
+def _legacy_config_value(key: str, default: str = "") -> str:
+    """Resolve a value left by an older proxy-based install: env first, then file.
+
+    The environment is checked before ``config.env`` because the CLI loads the
+    existing ``config.env`` into the environment at startup, and ``install``
+    rewrites ``config.env`` with the new hook-only field set *before* the legacy
+    redirect is stripped. A key dropped from that new field set (the proxy
+    host/port, or the captured ``DD_AI_GUARD_ANTHROPIC_UPSTREAM``) therefore
+    survives only in the environment by the time we look.
+    """
+    return os.environ.get(key) or storage.load_config().get(key) or default
+
+
+def _remove_proxy_redirect(env_block: dict) -> bool:
+    """Strip a legacy ``ANTHROPIC_BASE_URL`` redirect to our local proxy.
+
+    Older ai-guard versions pointed Claude at the proxy; with in-process hooks
+    there is no proxy, so a leftover redirect would send Claude to a dead
+    address. Only a value matching our proxy URL is touched — a user's own base
+    URL is left alone. Restores the upstream captured at install time
+    (``DD_AI_GUARD_ANTHROPIC_UPSTREAM``) when one was saved. Returns ``True`` if
+    the block was modified.
+    """
+    base_url = env_block.get("ANTHROPIC_BASE_URL")
+    if not isinstance(base_url, str) or base_url != _configured_proxy_url():
+        return False
+    upstream = _legacy_config_value("DD_AI_GUARD_ANTHROPIC_UPSTREAM")
+    if upstream and upstream != AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT:
+        env_block["ANTHROPIC_BASE_URL"] = upstream
+    else:
+        env_block.pop("ANTHROPIC_BASE_URL", None)
+    return True
 
 
 class ClaudeInstaller(AgentInstaller):
@@ -123,14 +156,8 @@ class ClaudeInstaller(AgentInstaller):
 
     def env_fields(self) -> list[Field]:
         return [
-            Field(
-                "DD_AI_GUARD_ANTHROPIC_UPSTREAM",
-                "Upstream Anthropic endpoint",
-                default=self._detect_upstream() or AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT,
-                tier=Tier.ADVANCED,
-            ),
-            # Persisted so the proxy service inherits the override on every
-            # restart.
+            # The hook honours $CLAUDE_CONFIG_DIR when locating settings/skills,
+            # so persist it when the user has it set.
             Field(
                 "CLAUDE_CONFIG_DIR",
                 "Claude config directory override",
@@ -139,7 +166,7 @@ class ClaudeInstaller(AgentInstaller):
             ),
         ]
 
-    def install(self, proxy_url: str) -> list[Path]:
+    def install(self) -> list[Path]:
         original = self._load()
 
         merged_hooks = dict(original.get("hooks") or {})
@@ -151,12 +178,17 @@ class ClaudeInstaller(AgentInstaller):
             current.extend(blocks)
             merged_hooks[event] = current
 
-        env_block = dict(original.get("env") or {})
-        env_block["ANTHROPIC_BASE_URL"] = proxy_url
-
         merged = dict(original)
         merged["hooks"] = merged_hooks
-        merged["env"] = env_block
+
+        # Clean up a proxy redirect left by an older ai-guard install — the
+        # hooks work in-process now, so there is nothing to redirect to.
+        env_block = dict(original.get("env") or {})
+        _remove_proxy_redirect(env_block)
+        if env_block:
+            merged["env"] = env_block
+        else:
+            merged.pop("env", None)
 
         settings_path = paths.claude_settings_path()
         atomic_write(settings_path, lambda fh: json.dump(merged, fh, indent=2))
@@ -182,16 +214,10 @@ class ClaudeInstaller(AgentInstaller):
             if not hooks:
                 data.pop("hooks", None)
 
-        # Restore the user's pre-existing upstream if one was captured at install
-        # time (DD_AI_GUARD_ANTHROPIC_UPSTREAM in config.env); otherwise drop the
-        # ANTHROPIC_BASE_URL key we added so the agent goes back to its default.
+        # Strip a legacy proxy redirect (restoring any captured upstream).
         env_block = data.get("env")
-        if isinstance(env_block, dict) and "ANTHROPIC_BASE_URL" in env_block:
-            upstream = storage.load_config().get("DD_AI_GUARD_ANTHROPIC_UPSTREAM", "")
-            if upstream and upstream != AIGuardConstants.ANTHROPIC_UPSTREAM_DEFAULT:
-                env_block["ANTHROPIC_BASE_URL"] = upstream
-            else:
-                env_block.pop("ANTHROPIC_BASE_URL", None)
+        if isinstance(env_block, dict):
+            _remove_proxy_redirect(env_block)
             if not env_block:
                 data.pop("env", None)
 
@@ -208,14 +234,6 @@ class ClaudeInstaller(AgentInstaller):
             raise RuntimeError(
                 f"could not parse {settings_path}: {exc.msg} at line {exc.lineno}"
             ) from exc
-
-    def _detect_upstream(self) -> str | None:
-        try:
-            data = self._load()
-        except RuntimeError:
-            return None
-        existing = (data.get("env") or {}).get("ANTHROPIC_BASE_URL")
-        return existing or os.getenv("ANTHROPIC_BASE_URL")
 
     @staticmethod
     def _claude_version(executable: Path) -> Version | None:

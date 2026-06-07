@@ -179,13 +179,6 @@ fi
 require mktemp
 require tar
 
-# The handoff to `ai-guard ${MODE}` manages a per-user service, so the
-# platform's service tool must be present.
-case "$os" in
-    linux) require systemctl "ai-guard runs as a systemd --user service" ;;
-    macos) require launchctl "ai-guard runs as a launchd user agent" ;;
-esac
-
 if [ "$missing" -gt 0 ]; then
     die "$missing required tool(s) missing — install them and re-run"
 fi

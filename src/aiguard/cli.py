@@ -9,25 +9,22 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 
-from aiguard import __version__, paths
+from aiguard import __version__, keychain, paths, storage
 from aiguard.hooks.hooks import hook
 from aiguard.installer.installer import install, uninstall
-from aiguard.proxy.server import proxy
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "aiguard"
 
 logger = logging.getLogger("ai_guard")
-
-
-LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 def _setup_logging(log_file: str | None, log_level: str) -> None:
@@ -43,7 +40,7 @@ def _setup_logging(log_file: str | None, log_level: str) -> None:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logger.addHandler(handler)
-    logger.setLevel(getattr(logging, log_level.upper()))
+    logger.setLevel(getattr(logging, log_level.upper(), logging.ERROR))
 
     def _excepthook(exc_type, exc_value, exc_tb):
         if not issubclass(exc_type, KeyboardInterrupt):
@@ -60,47 +57,40 @@ class _Group(click.Group):
 
 @click.group(cls=_Group)
 @click.version_option(version=__version__, prog_name="ai-guard")
-@click.option(
-    "--log-file",
-    envvar="DD_AI_GUARD_LOG_FILE",
-    default=lambda: str(paths.log_file_path()),
-    show_default=True,
-    help="Path to log file.",
-)
-@click.option(
-    "--log-level",
-    envvar="DD_AI_GUARD_LOG_LEVEL",
-    type=click.Choice(LOG_LEVELS, case_sensitive=False),
-    default="ERROR",
-    show_default=True,
-    help="Minimum severity written to the log file.",
-)
-def main(log_file: str | None, log_level: str) -> None:
+def main() -> None:
     """Datadog AI Guard — real-time security for coding agents.
 
     Intercepts and evaluates every agent action (prompts, tool calls,
     responses) through Datadog AI Guard, blocking unsafe operations
     before they execute.
 
+    Configuration (credentials, ``DD_AI_GUARD_LOG_FILE`` / ``DD_AI_GUARD_LOG_LEVEL``,
+    block mode, …) is read from the environment and from ``config.env``
+    (``$XDG_CONFIG_HOME/ai-guard/config.env``); exported values take precedence.
+
     \b
     Commands:
       hook       Dispatch a hook event for an agent
-      proxy      Transparent HTTP proxy for inspecting LLM traffic
       install    Set up ai-guard for detected coding agents
       uninstall  Remove ai-guard and restore agent configs
 
     \b
     Examples:
       ai-guard hook claude SessionStart < event.json
-      ai-guard proxy --port 29279 --anthropic-upstream https://api.anthropic.com
       ai-guard install
       ai-guard uninstall --yes
     """
-    _setup_logging(log_file, log_level)
+    # Make config.env + keychain secrets available to every command (and the
+    # hooks) before anything reads the environment.
+    storage.load_into_environ()
+    keychain.load_into_env()
+    _setup_logging(
+        os.environ.get("DD_AI_GUARD_LOG_FILE", str(paths.log_file_path())),
+        os.environ.get("DD_AI_GUARD_LOG_LEVEL", "ERROR"),
+    )
 
 
 main.add_command(hook)
-main.add_command(proxy)
 main.add_command(install)
 main.add_command(uninstall)
 

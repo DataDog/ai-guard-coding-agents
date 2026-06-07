@@ -4,45 +4,47 @@ Guidance for AI coding agents (Claude Code, Codex, Cursor, …) working in this 
 
 ## Purpose
 
-Real-time guardrails for coding agents. The CLI ships two pieces that work together:
+Real-time guardrails for coding agents. The CLI wires hooks into the agent's lifecycle and evaluates every tool call against [Datadog AI Guard](https://docs.datadoghq.com/security/ai_guard/) **in-process** — there is no proxy and no background service.
 
-1. **A long-running HTTP proxy** (`ai-guard proxy`) that sits between the agent and the upstream LLM API. It captures every request/response, persists the conversation, and exposes a `/hook/<agent>/<hook>` endpoint that the agent's hook runner can POST events to.
-2. **A short-lived hook shim** (`ai-guard hook AGENT HOOK`) that reads a JSON event from stdin, POSTs it to the running proxy, and writes any response back to stdout. Wired into Claude Code via `~/.claude/settings.json`.
-
-Both flows ultimately land in a single `ProxyHandler` (`ClaudeProxy`) that does the actual evaluation against Datadog AI Guard, span emission, and per-session storage.
+`ai-guard hook AGENT HOOK` is the one moving piece: a short-lived command the agent invokes on each lifecycle event (wired into Claude Code via `~/.claude/settings.json`). It reads the event JSON from stdin, rebuilds the conversation from the agent's own transcript, evaluates the pending tool call, and writes a decision back to stdout — an empty body to allow, or a JSON deny/block payload to stop the call.
 
 ## Repository layout
 
 ```
 /
 ├── src/aiguard/
-│   ├── cli.py                      # Top-level Click CLI: `proxy`, `hook` commands
+│   ├── cli.py                      # Top-level Click CLI: hook, install, uninstall.
+│   │                               #   Group callback loads config.env into the env + sets up logging.
 │   ├── constants.py                # AIGuardConstants — span names + tag keys
-│   ├── storage.py                  # Per-session JSON persistence under $XDG_STATE_HOME/ai-guard/<agent>/<sid>/<slot>.json (slot is `main` for the parent session or the subagent's agent_id)
+│   ├── storage.py                  # config.env read/write: load_config / save_config / load_into_environ.
+│   │                               #   No conversation storage — history comes from the agent's transcript.
+│   ├── paths.py                    # XDG path helpers (bundle, launcher, config.env, Claude settings dir)
+│   ├── utils.py                    # atomic_write, platform predicates, fetch_endpoint_id, detect_executable
 │   ├── hooks/
-│   │   └── hooks.py                # `ai-guard hook` HTTP shim (aiohttp client → proxy)
-│   ├── proxy/
-│   │   ├── server.py               # Proxy + ProxyHandler ABC + URL routing for /hook/* and upstream
-│   │   └── util.py                 # WHATWG SSE parser
-│   └── claude/
-│       ├── proxy.py                # ClaudeProxy: handle_hook + parse_request/response + helpers
-│       └── util.py                 # fetch_user_id() — reads ~/.claude.json
+│   │   └── hooks.py                # Handler ABC + `ai-guard hook` command (in-process dispatch to a Handler)
+│   ├── claude/
+│   │   ├── handler.py              # ClaudeHandler(Handler): handle_hook dispatch, hook methods,
+│   │   │                           #   transcript → AI Guard messages, blocked-tool payloads
+│   │   └── installer.py            # ClaudeInstaller(AgentInstaller): merge/remove the hook block in settings.json
+│   └── installer/
+│       ├── installer.py            # `install` / `uninstall` Click commands + tiered field collection
+│       ├── agent.py                # AgentInstaller ABC + Field / Tier
+│       ├── ui.py                   # rich-based prompts and output
+│       └── service/                # Teardown ONLY of a legacy proxy service (manager / launchd / systemd_user / wrapper)
 ├── tests/
-│   ├── conftest.py                 # Shared fixtures (tmp_home, storage_root, proxy_client, fake_ai_guard, tracer_recorder)
-│   ├── fixtures/                   # Canned Anthropic JSON + SSE bodies, sample ~/.claude.json
-│   ├── unit/{test_claude, test_cli, test_storage}.py
-│   └── integration/{test_proxy, test_binary_proxy}.py
+│   ├── conftest.py                 # Fixtures (tmp_home, fake_ai_guard, tracer_recorder, transcripts, …)
+│   ├── transcripts.py              # TranscriptWriter + builders for Claude JSONL transcripts
+│   ├── unit/{test_claude, test_cli, test_storage, test_installer, test_utils}.py
+│   └── integration/{test_hooks, test_binary_hooks}.py
 ├── docker/claude/
 │   ├── Dockerfile                  # Multi-stage: PyInstaller binary + Claude Code runtime
 │   ├── claude-settings.json        # Wires every Claude Code hook to `ai-guard hook claude <Event>`
-│   └── entrypoint.sh               # Starts the proxy, waits for readiness, execs CMD
+│   └── entrypoint.sh               # Container entrypoint
 ├── .github/workflows/
-│   ├── test.yml                    # Cross-platform (linux/macos/windows × x86_64/arm64) test + binary smoke
+│   ├── test.yml                    # Cross-platform test + binary smoke
 │   └── build.yml                   # Tagged release build (calls test.yml first)
-├── docker-compose.yml              # mitmproxy + claude services for local testing
-├── ai-guard.spec                   # PyInstaller spec — single-file binary
+├── ai-guard.spec                   # PyInstaller spec — onedir bundle
 ├── pyproject.toml                  # uv project metadata, optional `test`/`build` extras
-├── .github/{PULL_REQUEST_TEMPLATE,ISSUE_TEMPLATE/*}.md  # OSS templates
 ├── CONTRIBUTING.md                 # PR workflow, dev setup, header convention
 ├── LICENSE                         # Apache 2.0
 ├── LICENSE-3rdparty.csv            # Direct deps tracked for OSS compliance
@@ -53,50 +55,43 @@ Both flows ultimately land in a single `ProxyHandler` (`ClaudeProxy`) that does 
 
 | Command | Source | What it does |
 |---|---|---|
-| `ai-guard proxy` | `proxy/server.py:proxy` | Start the long-running aiohttp proxy. Each registered handler declares its own upstream (`ClaudeProxy.upstream()`); requests are routed to handlers via `matches()`, hook events via the `ai-guard-cli` UA. Flags: `--host` (`DD_AI_GUARD_PROXY_HOST`, default `127.0.0.1`), `--port` (`DD_AI_GUARD_PROXY_PORT`, default `29279`), `--anthropic-upstream` (`DD_AI_GUARD_ANTHROPIC_UPSTREAM`, default `https://api.anthropic.com`), `--block/--no-block` (`DD_AI_GUARD_BLOCK`). |
-| `ai-guard hook <AGENT> <HOOK>` | `hooks/hooks.py:hook` | One-shot CLI: read stdin, POST to `<PROXY_URL>/hook/<agent>/<hook>` with `User-Agent: ai-guard-cli/<version>`, write reply to stdout. Flag: `--proxy-url` (`DD_AI_GUARD_PROXY_URL`, default `http://127.0.0.1:29279`). **Always exits 0** so a failed hook never breaks the host agent's command flow. |
+| `ai-guard hook <AGENT> <HOOK>` | `hooks/hooks.py:hook` | Read the event JSON from stdin, build the agent's `Handler`, evaluate against AI Guard, and write any decision to stdout. **Always exits 0** so a failed hook never breaks the host agent's command flow. |
+| `ai-guard install` | `installer/installer.py:install` | Detect supported agents, collect + write `config.env`, place the launcher on disk, and merge the hook block into the agent's settings. |
+| `ai-guard uninstall` | `installer/installer.py:uninstall` | Remove the hook block, delete the config + binary, preserve the application log. |
 
-The CLI is registered in `src/aiguard/cli.py` via `main.add_command(proxy)` and `main.add_command(hook)` (the `hook` Click command is imported from `aiguard.hooks.hooks`).
+`cli.main`'s group callback runs before every subcommand: it loads `config.env` into the environment (`storage.load_into_environ`, exported values win) and configures logging from `DD_AI_GUARD_LOG_FILE` / `DD_AI_GUARD_LOG_LEVEL`. Block mode comes from `DD_AI_GUARD_BLOCK` (default on); there is no `--block` flag.
 
 ## How a hook flows end-to-end
 
 ```
 Claude Code hook subprocess
-   │   stdin = event JSON
+   │   stdin = event JSON (transcript_path, session_id, [agent_id], tool_name, …)
    ▼
-ai-guard hook claude SessionStart        # hooks/hooks.py
-   │   POST /hook/claude/SessionStart
-   │   User-Agent: ai-guard-cli/<version>     ← routing key for the proxy
+ai-guard hook claude PreToolUse              # cli.main loads config.env → env; hooks/hooks.py
+   │   _build_handler("claude", block) → ClaudeHandler
    ▼
-Proxy._handle               # proxy/server.py
-   │   _is_hook_request(request) → True (UA contains "ai-guard-cli")
+ClaudeHandler.handle_hook("PreToolUse", payload)     # claude/handler.py
+   │   maps "PreToolUse" → method "_pre_tool_use", calls it
    ▼
-Proxy._handle_hook
-   │   parses path → (agent="claude", hook="SessionStart")
-   │   looks up handler by agent()
+_pre_tool_use(event)
+   │   _set_common_tags(event)                         # span tags via @tracer.wrap
+   │   messages = _load_messages(transcript_path, agent_id)   # read the agent's transcript
+   │   self._ai_guard.evaluate(messages, Options(block=…, tags=…))
    ▼
-ClaudeProxy.handle_hook(hook, payload)   # claude/proxy.py
-   │   maps "SessionStart" → method "_session_start"
-   │   awaits self._<snake_case_hook>(event)
-   ▼
-_session_start(event)  →  emits span via @tracer.wrap, sets tags, returns dict|None
+AIGuardAbortError → _blocked_tool_response(...) → JSON deny/block to stdout
+otherwise          → return None → empty stdout (allowed)
 ```
 
-Dispatch is dynamic: `getattr(self, "_" + camel_to_snake(hook), None)`. To add a hook, add a method named `_<snake_case>` and the proxy will route to it.
+Dispatch is dynamic: `getattr(self, "_" + camel_to_snake(hook), None)`. To add a hook, add a method named `_<snake_case>` and the handler will route to it. Handler methods are synchronous and return `dict | None`.
 
-## How the proxy + storage work
+## Conversation history (transcripts, not storage)
 
-`Proxy._handle` routes by request `User-Agent`:
+The handler rebuilds history from **Claude Code's own JSONL transcripts** — ai-guard keeps no per-session storage of its own.
 
-- **`User-Agent` contains `ai-guard-cli`** → `_handle_hook`. The path must be `/hook/<agent>/<hook>`; otherwise 404.
-- **Anything else** → `_handle_proxy`. The first handler whose `matches(request)` returns true gets it; the request body is run through `handler.parse_request(...) → (session_id, agent_id, messages)` and persisted via `storage.save_messages(..., agent_id=...)` so subagent traffic lands in its own slot. The request is forwarded to **`handler.upstream()`** (each handler owns its upstream), and after the response streams through, response messages parsed by `handler.parse_response(...)` are appended via load + save.
-- **No handler claims the request** → `502 Bad Gateway` with `text="no handler claims <method> <path>"`. The proxy is intentionally per-agent; there is no global passthrough.
+- Main session: `<project>/<session_id>.jsonl` (the `transcript_path` the hook payload carries).
+- Subagent (sidechain): `<project>/<session_id>/subagents/agent-<agent_id>.jsonl`.
 
-`matches()` is User-Agent-only by convention (`ClaudeProxy.matches` checks for `claude-cli`); method/path/content-type validation belongs in `parse_request`, which returns `("", "", [])` to skip persistence without rejecting the request.
-
-Storage layout is `$XDG_STATE_HOME/ai-guard/<agent>/<session_id>/<slot>.json` (overridable with `DD_AI_GUARD_HOME`). The slot is `main` for the parent session and the subagent's `agent_id` for sidechain calls, so a Task-spawned subagent that shares the Claude `session_id` gets its own history file instead of overwriting the parent's. The session/agent identifiers come from the `X-Claude-Code-Session-Id` and `X-Claude-Code-Agent-Id` headers that Claude Code stamps on every Anthropic request (the agent header is absent for the parent session). `storage._safe_resolve` resolves the candidate path and checks `candidate.parts == root.parts + segments` (a plain `relative_to(root)` test isn't enough — `..` and `../other` resolve *inside* the root and would still pass), so a hostile `agent`/`session_id`/`agent_id` that escapes the storage tree short-circuits to a no-op (load returns `[]`, save/delete log + bail). `SessionEnd` deletes the whole `<session_id>/` directory — every subagent slot included.
-
-The proxy does **not** evaluate during proxying — it only persists. AI Guard evaluation happens inside the hook handlers (`_pre_tool_use` / `_post_tool_use` / `_post_tool_use_failure`), which load the persisted history, append the new tool exchange, and call `self._ai_guard.evaluate(...)`.
+`_load_messages(transcript_path, agent_id)` (`claude/handler.py`) selects the right file — the subagent transcript when `agent_id` is set, else the main one — parses each JSONL line, and maps `user`/`assistant` turns to AI Guard `Message`s: `tool_use` blocks become `tool_calls`, `tool_result` blocks become `role="tool"` messages, text/thinking become content parts. Metadata rows and malformed lines are skipped. `_append_tool_result` adds the `PostToolUse` result/error unless the transcript already contains it (so a flushed result isn't duplicated).
 
 ## Currently wired hooks (Claude)
 
@@ -104,34 +99,38 @@ Method names map 1:1 to the event names in `docker/claude/claude-settings.json`:
 
 | Hook event | Method | What it does |
 |---|---|---|
-| `SessionStart` | `_session_start` | Emits a span with session_id, model, user email tags |
-| `SessionEnd` | `_session_end` | Emits a span; **deletes** the session's stored conversation |
-| `SubagentStart` | `_subagent_start` | Emits a span with subagent_id / subagent_type tags |
-| `SubagentStop` | `_subagent_stop` | Emits a span with subagent_id / subagent_type tags |
-| `PreToolUse` | `_pre_tool_use` | Loads stored history; for `Skill` tool calls injects the resolved `SKILL.md` body into the tool message so AI Guard sees what is about to be loaded. On `AIGuardAbortError` returns `{"hookSpecificOutput": {"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":...,"additionalContext":...}}` — `permissionDecisionReason` is the branded TUI banner, `additionalContext` is the structured guidance for Claude on how to message the user. |
-| `PostToolUse` | `_post_tool_use` | Appends the tool result to the stored history and re-evaluates. On abort returns both `{"decision":"block","reason":...}` (TUI banner) and `hookSpecificOutput.additionalContext` with the same user-messaging guidance. |
+| `SessionStart` | `_session_start` | Emits a span with session_id / model / user tags. |
+| `SessionEnd` | `_session_end` | Emits a span. (No stored history to clear — history lives in the agent's transcript.) |
+| `SubagentStart` | `_subagent_start` | Emits a span with subagent_id / subagent_type tags. |
+| `SubagentStop` | `_subagent_stop` | Emits a span with subagent_id / subagent_type tags. |
+| `PreToolUse` | `_pre_tool_use` | Loads the transcript; for `Skill` calls injects the resolved `SKILL.md` body as a tool message so AI Guard sees what is about to load. On `AIGuardAbortError` returns `{"hookSpecificOutput": {"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":…,"additionalContext":…}}` — `permissionDecisionReason` is the branded TUI banner, `additionalContext` is the structured guidance for Claude. |
+| `PostToolUse` | `_post_tool_use` | Appends the tool result to the transcript history and re-evaluates. On abort returns both `{"decision":"block","reason":…}` (TUI banner) and `hookSpecificOutput.additionalContext`. |
 | `PostToolUseFailure` | `_post_tool_use_failure` | Same shape as PostToolUse but uses `event.error` as the tool content. |
 
 ## Adding a new Claude Code hook
 
-1. Add a method `_<snake_case_hook_name>` on `ClaudeProxy`. Decorate with `@tracer.wrap(name=..., resource=AIGuardConstants.HOOK_RESOURCE)` if you want a span. The signature is `async def _foo(self, event: dict[str, Any]) -> dict[str, Any] | None`.
+1. Add a method `_<snake_case_hook_name>` on `ClaudeHandler`. Decorate with `@tracer.wrap(name=…, resource=AIGuardConstants.HOOK_RESOURCE)` if you want a span. Signature: `def _foo(self, event: dict[str, Any]) -> dict[str, Any] | None`.
 2. Register the hook in `docker/claude/claude-settings.json` so Claude Code invokes `ai-guard hook claude <CamelCaseName>` on the right lifecycle event.
-3. Add a test in `tests/unit/test_claude.py` under `TestHandleHookSpans` or `TestHandleHookToolUse` (depending on the shape).
+3. Add a test in `tests/unit/test_claude.py` (`TestHandleHookSpans` or `TestHandleHookToolUse`).
 
 If the hook needs new span tags or operation names, add constants in `src/aiguard/constants.py`.
 
 ## Adding a new agent (e.g., Codex, Cursor)
 
-1. Create `src/aiguard/<agent>/proxy.py` with a class that implements `ProxyHandler`'s six abstract methods:
-   - `agent()` — lowercase name used in `/hook/<agent>/...` URLs and CLI invocations.
-   - `upstream()` — the LLM API base URL the proxy will forward to when this handler matches.
-   - `matches(request)` — return true when this handler claims the request (User-Agent check by convention).
-   - `parse_request(request, body) -> (session_id, agent_id, messages)` — `agent_id` is empty for the parent session and the subagent's identifier when present, so storage can keep sidechain history in its own slot. Return `("", "", [])` to skip persistence.
-   - `parse_response(response, body) -> messages`.
-   - `handle_hook(hook, payload) -> bytes` (async).
-2. Register the handler in `proxy/server.py:proxy()` alongside `ClaudeProxy`. Add a `--<agent>-upstream` Click option (`DD_AI_GUARD_<AGENT>_UPSTREAM` envvar) with a sensible default.
-3. Add hidden imports for the new module to `ai-guard.spec`.
-4. Add a wiring file under `docker/<agent>/` analogous to `claude-settings.json`.
+1. Create `src/aiguard/<agent>/handler.py` with a `Handler` subclass (`hooks/hooks.py`):
+   - `agent()` — lowercase name used in `ai-guard hook <agent> …`.
+   - `handle_hook(hook, body) -> bytes` — dispatch the event and return the agent-shaped response (empty to allow).
+2. Register it in `hooks/hooks.py:_build_handler` (lazy import so unrelated commands don't pull in the agent's deps).
+3. For installer support, add an `AgentInstaller` subclass (`installer/agent.py`) that wires/removes the agent's hook config, and register it in `installer/installer.py:SUPPORTED_AGENTS`.
+4. Add hidden imports for the new module to `ai-guard.spec`, and a wiring file under `docker/<agent>/`.
+
+## Installer
+
+`install` merges the hook block into the agent's `settings.json` (no env redirect — the hooks run in-process) and places the launcher under `~/.local/share/ai-guard` with a `~/.local/bin/ai-guard` symlink so the `ai-guard hook` command resolves. It does **not** register a background service.
+
+Both `install` and `uninstall` **silently** tear down any proxy service left by an older version — most users never had one, so it never appears in the output. The `installer/service/` backends only implement teardown (`uninstall`/`remove`); there is no install path. `uninstall` also removes the hook block, `config.env`, and the binary, and strips any legacy `env.ANTHROPIC_BASE_URL` redirect from `settings.json`; the application log is preserved.
+
+Config is collected into `config.env` via tiered `Field`s (`installer/installer.py`). The CLI loads that file into the environment on every run, so the hooks (which build the AI Guard client from `DD_API_KEY` / `DD_APP_KEY` / `DD_SITE`) and logging pick it up.
 
 ## Build & test
 
@@ -156,28 +155,28 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 
 - Python 3.11+, managed with `uv`. Line length 100, double quotes, `ruff` for linting.
 - `Message` / `ContentPart` / `ToolCall` / `Function` come from `ddtrace.appsec.ai_guard`. They're `TypedDict`s — use the constructors for clarity but expect plain dicts after JSON round-trips.
-- All hook handler methods are `async`, return `dict | None`, and are decorated with `@tracer.wrap`. Inside, set tags via `tracer.current_span()`, not by manually opening a span.
-- Storage is the **source of truth** for conversation history during a session; the proxy persists, the hooks load. Don't keep parallel in-memory copies.
+- Hook handler methods are synchronous, return `dict | None`, and are decorated with `@tracer.wrap`. Set tags via `tracer.current_span()`, not by manually opening a span.
+- Conversation history is the agent's transcript — ai-guard does not persist its own copy. Read it through `_load_messages`; don't build a parallel store.
 - Logging goes to `$XDG_STATE_HOME/ai-guard/ai-guard.log` (rotating, 1 MB × 10 backups). Hook stdout must contain **only** the JSON decision the host agent expects — no extra prints.
-- The `ddtrace` dependency is pinned to a custom branch via a direct reference in `project.dependencies` (`ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks`). `[tool.hatch.metadata] allow-direct-references = true` opts hatchling into that form. Both `pip install git+...` and `uv sync` resolve to the same branch. Don't replace with the upstream release until `ddtrace.appsec.ai_guard` lands in a published version.
+- The `ddtrace` dependency is pinned to a custom branch via a direct reference in `project.dependencies` (`ddtrace @ git+https://github.com/DataDog/dd-trace-py@malvarez/ai-guard-claude-code-hooks`). `[tool.hatch.metadata] allow-direct-references = true` opts hatchling into that form. Both `pip install git+…` and `uv sync` resolve to the same branch. Don't replace with the upstream release until `ddtrace.appsec.ai_guard` lands in a published version.
 - Every source/config/script file carries the standard Datadog Apache-2.0 header (see [CONTRIBUTING.md](CONTRIBUTING.md#file-header) for the exact wording). Use the comment syntax for the file's language; skip docs, JSON, and test fixtures.
 
 ## Important constraints
 
-- **Hook CLI never exits non-zero.** A failed POST is logged via `logger.exception("failed to invoke hook")` and the command exits 0. This is intentional — a broken proxy must not break the user's coding session.
-- **The hook CLI's `User-Agent: ai-guard-cli/<version>` is load-bearing.** The proxy uses that substring to decide between `_handle_hook` and `_handle_proxy`. Any client that hits `/hook/...` directly (curl, scripts) must include the same UA or the request goes through the proxy path and fails.
-- **Per-agent upstreams, no global fallback.** Unmatched requests get 502 — the proxy is not a generic transparent forwarder. Every handler must declare its own `upstream()`.
-- **Proxy bound to localhost by default.** `--host` defaults to `127.0.0.1`. Pass `0.0.0.0` (or set `DD_AI_GUARD_PROXY_HOST=0.0.0.0`, as the docker-compose service does) only when something off-box must reach it.
-- **Path traversal is hardened in `storage.py`.** Any change that builds a file path from user-controlled input must go through `storage._safe_resolve` (which resolves the candidate and exact-matches `candidate.parts == root.parts + segments` — `relative_to(root)` alone misses `..`/`../other`), not raw concatenation.
-- **The proxy must preserve Anthropic response headers exactly** (especially `content-type: text/event-stream`) so Claude Code's SSE parser doesn't break. `_resp_headers` strips only hop-by-hop headers + `content-encoding`.
+- **The hook CLI never exits non-zero.** Any failure (unknown agent, missing credentials, handler exception, malformed payload) is logged via `logger.exception("failed to invoke hook …")` and the command exits 0 — a broken hook must never break the user's coding session.
+- **Hook stdout is the decision channel.** Only the JSON the host agent expects may be written to stdout; everything else goes to the log file.
+- **`config.env` is loaded once, by the CLI.** `cli.main` calls `storage.load_into_environ()` before dispatching, so subcommands (and the hooks) read `DD_*` from `os.environ`. Don't re-read `config.env` inside individual commands.
+- **The legacy proxy-service teardown is silent.** Don't surface it in install/uninstall output — users who never ran the old proxy shouldn't be told about it.
 
 ## Running locally with Docker Compose
 
+The `claude` container runs Claude Code with the ai-guard hooks pre-wired into `~/.claude/settings.json`; they evaluate in-process, so there's nothing else to start. A `mitmproxy` sidecar is an optional debugging HTTPS proxy (`HTTPS_PROXY`) that lets you watch Claude's calls to `api.anthropic.com` and ai-guard's AI Guard `/api/v2/ai-guard/evaluate` requests — it is not part of ai-guard.
+
 ```bash
-cp .env.example .env       # set DD_API_KEY, DD_APP_KEY
+cp .env.example .env       # set DD_API_KEY, DD_APP_KEY (the hooks read these from the container env)
 docker compose build
 docker compose up -d
 docker exec -ti ai-guard-coding-agents-claude-1 claude
 ```
 
-mitmproxy UI: `http://localhost:8081` (password: `ai_guard`). Claude's traffic and AI Guard `/api/v2/ai-guard/evaluate` calls are all visible there.
+mitmproxy UI: `http://localhost:8081` (password: `ai_guard`). The hook's log lands in `docker/.ai_guard/ai-guard.log` — the container's `$XDG_STATE_HOME/ai-guard` is bind-mounted there.

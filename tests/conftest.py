@@ -8,26 +8,18 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import aiohttp
-import aiohttp.web
 import pytest
-from aiohttp.test_utils import TestServer
 from ddtrace.appsec.ai_guard import AIGuardAbortError, Message
 
 from aiguard import utils
-from aiguard.claude.proxy import ClaudeProxy
-from aiguard.proxy.server import Proxy
+from tests.transcripts import TranscriptWriter
 
 logger = logging.getLogger(__name__)
-
-FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 # ── Filesystem isolation ──────────────────────────────────────────────────────
@@ -75,7 +67,7 @@ class _RecordedSpan:
         self,
         name: str,
         resource: str | None,
-        on_exit: Callable[["_RecordedSpan"], None] | None = None,
+        on_exit=None,
     ) -> None:
         self.name = name
         self.resource = resource
@@ -159,6 +151,12 @@ class FakeAIGuardClient:
     def queue_abort(self, abort: AIGuardAbortError) -> None:
         self._aborts.append(abort)
 
+    @property
+    def last_messages(self) -> list[Message]:
+        """Messages passed to the most recent ``evaluate`` call."""
+        assert self.calls, "evaluate() was never called"
+        return self.calls[-1][0]
+
     def evaluate(self, messages: list[Message], options: dict[str, object]) -> None:
         self.calls.append((list(messages), dict(options) if options else {}))
         if self._aborts:
@@ -167,100 +165,28 @@ class FakeAIGuardClient:
 
 @pytest.fixture(autouse=True)
 def fake_ai_guard(monkeypatch: pytest.MonkeyPatch) -> FakeAIGuardClient:
-    """Replace ``new_ai_guard_client`` so ``ClaudeProxy()`` doesn't need real DD keys.
+    """Replace ``new_ai_guard_client`` so ``ClaudeHandler()`` doesn't need real DD keys.
 
-    Autouse: every test that imports/instantiates ``ClaudeProxy`` (directly or
-    via the proxy harness) gets the fake. Tests that want to assert evaluation
-    calls or queue an abort take ``fake_ai_guard`` as a parameter.
+    Autouse: every test that instantiates ``ClaudeHandler`` (directly or via the
+    ``hook`` command) gets the fake. Tests that want to assert evaluation calls
+    or queue an abort take ``fake_ai_guard`` as a parameter.
     """
     fake = FakeAIGuardClient()
     monkeypatch.setattr(
-        "aiguard.claude.proxy.new_ai_guard_client",
+        "aiguard.claude.handler.new_ai_guard_client",
         lambda mode=None, meta=None: fake,
         raising=False,
     )
     return fake
 
 
-# ── Mock Anthropic upstream ───────────────────────────────────────────────────
+# ── Claude transcript builder ──────────────────────────────────────────────────
 
 
 @pytest.fixture
-def anthropic_request_body() -> dict[str, Any]:
-    return json.loads((FIXTURE_DIR / "anthropic_messages_request.json").read_text())
-
-
-@pytest.fixture
-def anthropic_response_body() -> dict[str, Any]:
-    return json.loads((FIXTURE_DIR / "anthropic_messages_response.json").read_text())
-
-
-@pytest.fixture
-def anthropic_sse_body() -> bytes:
-    return (FIXTURE_DIR / "anthropic_sse_stream.txt").read_bytes()
-
-
-AnthropicHandler = Callable[[aiohttp.web.Request], Awaitable[aiohttp.web.StreamResponse]]
-
-
-@pytest.fixture
-async def anthropic_server() -> Any:
-    """Spin up an aiohttp TestServer with a configurable handler.
-
-    Yields a factory: `factory(handler)` returns the running server's URL str.
-    """
-    servers: list[TestServer] = []
-
-    async def factory(handler: AnthropicHandler) -> str:
-        app = aiohttp.web.Application()
-        app.router.add_route("*", "/{path:.*}", handler)
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-        return str(server.make_url("/")).rstrip("/")
-
-    yield factory
-
-    for server in servers:
-        await server.close()
-
-
-# ── Proxy harness ─────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-async def proxy_client(
-    anthropic_server, storage_root: Path, fake_ai_guard: "FakeAIGuardClient"
-) -> Any:
-    """Yield a factory that builds a proxy in front of a configurable upstream.
-
-    Usage:
-        client = await proxy_client(handler)
-        async with client.post("/v1/messages", ...) as resp: ...
-    """
-    servers: list[TestServer] = []
-
-    async def factory(
-        upstream_handler: AnthropicHandler, *, blocking: bool = True
-    ) -> aiohttp.test_utils.TestClient:
-        upstream_url = await anthropic_server(upstream_handler)
-        proxy = Proxy(
-            host="127.0.0.1",
-            port=0,
-            handlers=[ClaudeProxy(upstream_url, blocking)],
-        )
-        app = proxy.build_app()
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-        client = aiohttp.test_utils.TestClient(server)
-        await client.start_server()
-        return client
-
-    yield factory
-
-    for s in servers:
-        await s.close()
+def transcripts(tmp_path: Path) -> TranscriptWriter:
+    """A :class:`TranscriptWriter` rooted at an isolated fake project directory."""
+    return TranscriptWriter(tmp_path / "projects" / "test-project")
 
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
