@@ -59,7 +59,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       # ddtrace is pinned to a git source whose tests/ tree includes paths
       # > 260 chars; without longpaths Windows checkout fails mid-clone.
@@ -72,7 +72,7 @@ jobs:
       # rather than the runner's externally-managed system Python (PEP 668).
       # Without this, `uv pip install --system` fails on ubuntu-24.04 and
       # macos-latest images that ship a marked-externally-managed Python.
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           python-version: "3.13"
 
@@ -142,7 +142,7 @@ jobs:
         shell: pwsh
         run: Copy-Item "${{ steps.attest.outputs.bundle-path }}" "dist/${{ matrix.artifact }}.zip.sigstore.json"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: runner.os != 'Windows'
         with:
           name: ${{ matrix.artifact }}
@@ -151,7 +151,7 @@ jobs:
             dist/${{ matrix.artifact }}.tar.gz.sha256
             dist/${{ matrix.artifact }}.tar.gz.sigstore.json
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: runner.os == 'Windows'
         with:
           name: ${{ matrix.artifact }}
@@ -181,7 +181,7 @@ jobs:
 
       - name: Upload installer artifact
         if: matrix.artifact == 'ai-guard-linux-x86_64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: installer
           path: |
@@ -213,7 +213,7 @@ jobs:
       # Pull every per-platform artifact plus the installer into one flat
       # directory; each was uploaded under its own name by the build matrix.
       - name: Download built artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: dist
           merge-multiple: true
