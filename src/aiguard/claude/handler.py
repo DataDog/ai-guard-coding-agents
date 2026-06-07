@@ -73,10 +73,6 @@ class ClaudeHandler(Handler):
         """
         try:
             event = json.loads(payload) if payload and payload.strip() else {}
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "%s: raw event = %s", hook, json.dumps(event, ensure_ascii=False, default=str)
-                )
         except (json.JSONDecodeError, ValueError):
             logger.error("claude hook %s: invalid JSON payload", hook, exc_info=True)
             event = {}
@@ -84,22 +80,22 @@ class ClaudeHandler(Handler):
         method_name = "_" + _CAMEL_TO_SNAKE.sub("_", hook).lower()
         method = getattr(self, method_name, None)
         if not method:
-            logger.warning("claude: unhandled hook %r", hook)
+            logger.error("claude: unhandled hook %r", hook)
             return b""
 
-        logger.debug(
-            "claude: dispatching hook %s (session=%s, agent=%s, tool=%s)",
-            hook,
-            event.get("session_id", ""),
-            event.get("agent_id", ""),
-            event.get("tool_name", ""),
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "claude: dispatching hook %s: %s",
+                hook,
+                json.dumps(event, ensure_ascii=False, default=str),
+            )
         result = method(event)
-        logger.debug(
-            "claude: hook %s -> %s",
-            hook,
-            json.dumps(result, ensure_ascii=False, default=str) if result else "allow",
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "claude: hook %s -> %s",
+                hook,
+                json.dumps(result, ensure_ascii=False, default=str) if result else "allow",
+            )
         return b"" if result is None else json.dumps(result, ensure_ascii=False).encode()
 
     # ── Hook handlers ─────────────────────────────────────────────────────────
@@ -191,9 +187,9 @@ class ClaudeHandler(Handler):
         tags = _set_common_tags(event)
         agent_id = event.get("agent_id", "")
         messages = _load_messages(event.get("transcript_path", ""), agent_id)
-        raw_input = event.get("prompt", "")
-        if raw_input:
-            messages.append(Message(role="user", content=raw_input))
+        prompt = event.get("prompt", "")
+        if prompt:
+            messages.append(Message(role="user", content=prompt))
         # Inject the command/skill definition so AI Guard inspects what the
         # expansion will actually load, not just the line the user typed.
         expansion = _fetch_command_expansion(event)
@@ -655,19 +651,20 @@ def _fetch_command_expansion(event: dict[str, Any]) -> list[Message]:
     Returns an empty list when no definition can be located (the expansion is
     then evaluated from the typed line alone).
     """
-    # Claude Code sends ``command_name`` / ``command_args`` / ``expansion_type``
-    # (not the ``command`` / ``raw_input`` the public docs describe); keep the
-    # legacy keys as a fallback in case the payload shape changes again.
-    command = event.get("command_name") or event.get("command", "")
-    cwd = event.get("cwd", "")
     expansion_type = event.get("expansion_type", "")
+    if expansion_type != "slash_command":
+        return []
+
+    command = event.get("command_name", "")
+    if not command:
+        logger.debug("expansion: no command_name in event; nothing to inject")
+        return []
+
+    cwd = event.get("cwd", "")
     command_args = event.get("command_args", "")
     logger.debug(
         "expansion: resolving command_name=%r type=%r (cwd=%r)", command, expansion_type, cwd
     )
-    if not command:
-        logger.debug("expansion: no command_name in event; nothing to inject")
-        return []
 
     kind, content = "command", None
     command_file = _find_command_file(cwd, command)
@@ -716,17 +713,22 @@ def _find_command_file(cwd: str, command: str) -> Path | None:
     Slash commands are markdown files under a ``commands`` directory. Names may
     be plain (``"review-code"`` → ``commands/review-code.md``) or namespaced
     (``"frontend:component"`` → ``commands/frontend/component.md``; the leading
-    segment of a namespaced name also scopes the plugin search). Install
-    locations are checked in precedence order:
+    segment of a namespaced name also scopes the plugin search). The command
+    roots are checked in precedence order:
 
-      1. Project-level: ``<cwd>/.claude/commands/<rel>.md`` and the same path on
-         every ancestor up to the filesystem root (so a command installed at the
-         repo root is found from a deeply nested ``cwd``).
-      2. User-level: ``<claude_config_dir>/commands/<rel>.md``.
+      1. Project-level: ``<cwd>/.claude/commands`` and the same path on every
+         ancestor up to the filesystem root (so a command installed at the repo
+         root is found from a deeply nested ``cwd``).
+      2. User-level: ``<claude_config_dir>/commands``.
       3. Plugin-scoped (for a namespaced name): any
-         ``<claude_config_dir>/plugins/**/commands/<rel>.md`` whose path contains
-         the leading namespace segment.
-      4. Fallback: any ``<claude_config_dir>/plugins/**/commands/<rel>.md``.
+         ``<claude_config_dir>/plugins/**/commands`` whose path contains the
+         leading namespace segment.
+      4. Fallback: any ``<claude_config_dir>/plugins/**/commands``.
+
+    Within each root we first try the exact relative path (``<rel>.md``). If
+    that misses, we fall back to a recursive search for ``<basename>.md`` — a
+    nested command (``commands/frontend/component.md``) may be reported by its
+    basename alone (``component``) rather than as ``frontend:component``.
 
     Returns the first existing file, or ``None``.
     """
@@ -736,35 +738,34 @@ def _find_command_file(cwd: str, command: str) -> Path | None:
     parts = command.split(":")
     # ``frontend:component`` → ``frontend/component.md``; ``foo`` → ``foo.md``.
     leaf = Path(*parts).with_suffix(".md")
+    basename = f"{Path(parts[-1]).name}.md" if parts[-1] else ""
     plugin = parts[0] if len(parts) > 1 else ""
 
+    roots: list[Path] = []
     seen: set[Path] = set()
-    candidates: list[Path] = []
 
-    def _add(commands_root: Path) -> None:
+    def _add_root(commands_root: Path) -> None:
         try:
-            root = commands_root.resolve(strict=False)
-            target = (commands_root / leaf).resolve(strict=False)
-            target.relative_to(root)
+            resolved = commands_root.resolve(strict=False)
         except (OSError, ValueError):
-            return  # invalid path components or escapes the commands root
-        if target in seen:
             return
-        seen.add(target)
-        candidates.append(target)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
 
     # 1. Project-level: walk up from cwd until the filesystem root.
     if cwd:
         try:
             here = Path(cwd).expanduser().resolve(strict=False)
             for parent in (here, *here.parents):
-                _add(parent / ".claude" / "commands")
+                _add_root(parent / ".claude" / "commands")
         except (OSError, ValueError):
             logger.debug("find_command: invalid cwd %r", cwd)
 
     # 2. User-level commands directory.
     claude_home = paths.claude_config_dir()
-    _add(claude_home / "commands")
+    _add_root(claude_home / "commands")
 
     # 3 & 4. Plugin marketplaces — plugin-scoped first, then any.
     plugins_root = claude_home / "plugins"
@@ -777,18 +778,37 @@ def _find_command_file(cwd: str, command: str) -> Path | None:
         if plugin:
             for d in commands_dirs:
                 if plugin in d.parts:
-                    _add(d)
+                    _add_root(d)
         for d in commands_dirs:
-            _add(d)
+            _add_root(d)
 
-    for candidate in candidates:
+    # First pass: the exact relative path, guarding against components that
+    # escape the commands root (e.g. a ``..`` in the command name).
+    for root in roots:
+        target = (root / leaf).resolve(strict=False)
         try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
+            target.relative_to(root)
+        except ValueError:
             continue
+        if target.is_file():
+            return target
 
-    logger.debug("find_command: %r not found (checked %d locations)", command, len(candidates))
+    # Fallback: resolve a nested command reported by its basename alone.
+    if basename:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                for match in sorted(root.rglob(basename)):
+                    if match.is_file():
+                        logger.debug(
+                            "find_command: resolved %r via basename search to %s", command, match
+                        )
+                        return match
+            except OSError:
+                logger.debug("find_command: error searching %s", root, exc_info=True)
+
+    logger.debug("find_command: %r not found (checked %d root(s))", command, len(roots))
     return None
 
 

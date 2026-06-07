@@ -731,6 +731,22 @@ class TestFindCommandFile:
         (cmd_dir / "component.md").write_text("# component")
         assert _find_command_file("/", "frontend:component") == cmd_dir / "component.md"
 
+    def test_nested_command_found_by_basename_alone(self, tmp_home: Path) -> None:
+        # A nested command may be reported as just ``component`` (not
+        # ``frontend:component``); the recursive basename fallback still finds it.
+        cmd_dir = tmp_home / ".claude" / "commands" / "frontend"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "component.md").write_text("# component")
+        assert _find_command_file("/", "component") == cmd_dir / "component.md"
+
+    def test_exact_relative_path_wins_over_basename_fallback(self, tmp_home: Path) -> None:
+        commands = tmp_home / ".claude" / "commands"
+        (commands / "frontend").mkdir(parents=True)
+        (commands / "frontend" / "component.md").write_text("# nested")
+        (commands / "component.md").write_text("# top-level")
+        # A direct ``commands/component.md`` is preferred over the nested match.
+        assert _find_command_file("/", "component") == commands / "component.md"
+
     def test_returns_none_when_missing(self, tmp_home: Path) -> None:
         assert _find_command_file("/", "nope") is None
         assert _find_command_file("/", "") is None
@@ -753,20 +769,41 @@ class TestFetchCommandExpansion:
         assert messages[1]["tool_call_id"] == messages[0]["tool_calls"][0]["id"]
         assert "deploy body" in messages[1]["content"]
 
-    def test_skill_fallback_becomes_skill_tool_call_and_result(self, tmp_home: Path) -> None:
+    def test_slash_command_falls_back_to_skill_when_no_command_file(
+        self, tmp_home: Path
+    ) -> None:
+        # A slash command whose name has no commands/<name>.md but matches a
+        # skill resolves to the skill's SKILL.md.
         skill_dir = tmp_home / ".claude" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# my-skill body")
 
         messages = _fetch_command_expansion(
-            {"command_name": "my-skill", "expansion_type": "skill", "cwd": "/"}
+            {"command_name": "my-skill", "expansion_type": "slash_command", "cwd": "/"}
         )
         assert messages[0]["tool_calls"][0]["function"]["name"] == "skill"
         assert "my-skill body" in messages[1]["content"]
 
+    def test_only_slash_command_expansions_are_resolved(self, tmp_home: Path) -> None:
+        # Skill expansions are handled by the PreToolUse Skill path, so this hook
+        # only injects for expansion_type == "slash_command".
+        skill_dir = tmp_home / ".claude" / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# my-skill body")
+
+        assert _fetch_command_expansion(
+            {"command_name": "my-skill", "expansion_type": "skill", "cwd": "/"}
+        ) == []
+        assert _fetch_command_expansion({"command_name": "my-skill", "cwd": "/"}) == []
+
     def test_returns_empty_when_nothing_resolves(self, tmp_home: Path) -> None:
-        assert _fetch_command_expansion({"command_name": "ghost", "cwd": "/"}) == []
-        assert _fetch_command_expansion({"cwd": "/"}) == []
+        assert (
+            _fetch_command_expansion(
+                {"command_name": "ghost", "expansion_type": "slash_command", "cwd": "/"}
+            )
+            == []
+        )
+        assert _fetch_command_expansion({"expansion_type": "slash_command", "cwd": "/"}) == []
 
 
 class TestHandleHookUserPromptExpansion:
