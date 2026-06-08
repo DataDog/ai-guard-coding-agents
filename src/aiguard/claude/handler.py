@@ -20,13 +20,12 @@ from ddtrace import tracer
 from ddtrace.ext import user
 
 from aiguard import paths, utils
+from aiguard.claude import translate
 from aiguard.client import (
     AIGuardAbortError,
     ContentPart,
-    Function,
     Message,
     Options,
-    ToolCall,
     new_ai_guard_client,
 )
 from aiguard.constants import AIGuardConstants
@@ -154,7 +153,9 @@ class ClaudeHandler(Handler):
         messages = _load_messages(event.get("transcript_path", ""), agent_id)
         tool_response = event.get("tool_response", "")
         _append_tool_result(
-            messages, event.get("tool_use_id", ""), _resolve_tool_content(tool_response) or ""
+            messages,
+            event.get("tool_use_id", ""),
+            translate.resolve_tool_content(tool_response) or "",
         )
         try:
             self._evaluate_messages(messages, tags)
@@ -235,9 +236,7 @@ def _load_messages(transcript_path: str, agent_id: str) -> list[Message]:
         return []
 
     entries = _read_transcript(path)
-    messages: list[Message] = []
-    for entry in entries:
-        messages.extend(_entry_to_messages(entry))
+    messages = translate.transcript_to_messages(entries)
 
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
@@ -278,29 +277,24 @@ def _append_pending_tool_call(messages: list[Message], event: dict[str, Any]) ->
     if not tool_name:
         return
     tool_use_id = event.get("tool_use_id", "")
-    try:
-        arguments = json.dumps(event.get("tool_input", {}), ensure_ascii=False)
-    except (TypeError, ValueError):
-        arguments = "{}"
+    # Build the call the same way a transcript ``tool_use`` block would be
+    # translated, so the dedup comparison below matches an already-flushed call.
+    call = translate.tool_use_to_call(
+        {"id": tool_use_id, "name": tool_name, "input": event.get("tool_input", {})}
+    )
+    arguments = call["function"]["arguments"]
 
     for message in messages:
         if message.get("role") != "assistant":
             continue
-        for call in message.get("tool_calls", []) or []:
-            if tool_use_id and call.get("id") == tool_use_id:
+        for existing in message.get("tool_calls", []) or []:
+            if tool_use_id and existing.get("id") == tool_use_id:
                 return
-            function = call.get("function", {})
+            function = existing.get("function", {})
             if function.get("name") == tool_name and function.get("arguments") == arguments:
                 return
 
-    messages.append(
-        Message(
-            role="assistant",
-            tool_calls=[
-                ToolCall(id=tool_use_id, function=Function(name=tool_name, arguments=arguments))
-            ],
-        )
-    )
+    messages.append(Message(role="assistant", tool_calls=[call]))
 
 
 def _resolve_transcript(transcript_path: str, agent_id: str) -> Path | None:
@@ -341,131 +335,6 @@ def _read_transcript(path: Path) -> list[dict[str, Any]]:
     except OSError:
         logger.error("failed to read transcript %s", path, exc_info=True)
     return entries
-
-
-def _entry_to_messages(entry: dict[str, Any]) -> list[Message]:
-    """Translate one transcript entry into zero or more AI Guard messages.
-
-    Only ``user`` and ``assistant`` turns carry conversation content; metadata
-    rows (mode changes, snapshots, summaries, …) are ignored. A single turn may
-    expand into several messages: Anthropic packs tool results into a ``user``
-    turn and tool calls into an ``assistant`` turn, both of which AI Guard
-    models as standalone messages.
-    """
-    if entry.get("type") not in ("user", "assistant"):
-        return []
-    message = entry.get("message")
-    if not isinstance(message, dict):
-        return []
-
-    role = message.get("role")
-    content = message.get("content")
-
-    if isinstance(content, str):
-        return [Message(role=role, content=content)] if content else []
-    if not isinstance(content, list):
-        return []
-
-    if role == "user":
-        return _user_blocks_to_messages(content)
-    if role == "assistant":
-        return _assistant_blocks_to_messages(content)
-    return []
-
-
-def _user_blocks_to_messages(blocks: list) -> list[Message]:
-    """Split a user turn into tool-result messages plus any plain content."""
-    messages: list[Message] = []
-    for b in blocks:
-        if isinstance(b, dict) and b.get("type") == "tool_result":
-            messages.append(
-                Message(
-                    role="tool",
-                    tool_call_id=b.get("tool_use_id", ""),
-                    content=_resolve_tool_content(b.get("content")),
-                )
-            )
-    parts = _to_content_parts(blocks, exclude_types={"tool_result"})
-    if parts:
-        messages.append(Message(role="user", content=parts))
-    return messages
-
-
-def _assistant_blocks_to_messages(blocks: list) -> list[Message]:
-    """Fold an assistant turn into a single message with text and tool calls."""
-    tool_calls: list[ToolCall] = []
-    for b in blocks:
-        if isinstance(b, dict) and b.get("type") == "tool_use":
-            try:
-                arguments = json.dumps(b.get("input", {}), ensure_ascii=False)
-            except (TypeError, ValueError):
-                arguments = "{}"
-            tool_calls.append(
-                ToolCall(
-                    id=b.get("id", ""),
-                    function=Function(name=b.get("name", ""), arguments=arguments),
-                )
-            )
-
-    parts = _to_content_parts(blocks, exclude_types={"tool_use"})
-    if not parts and not tool_calls:
-        return []
-
-    message: Message = {"role": "assistant"}
-    if parts:
-        message["content"] = parts
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return [message]
-
-
-def _to_content_part(block: object) -> ContentPart | None:
-    """Convert any Anthropic content block to a ContentPart, preserving type.
-
-    - text blocks: keep raw text
-    - other blocks (image, tool_use, tool_result, thinking, etc.): serialize as JSON
-    """
-    if not isinstance(block, dict):
-        try:
-            return ContentPart(type="unknown", text=json.dumps(block, ensure_ascii=False))
-        except Exception:
-            return None
-
-    btype = block.get("type") or "unknown"
-    if btype == "text":
-        text = block.get("text", "")
-        return ContentPart(type="text", text=text) if text else None
-
-    try:
-        payload = json.dumps(block, ensure_ascii=False)
-    except Exception:
-        payload = str(block)
-    return ContentPart(type=btype, text=payload)
-
-
-def _to_content_parts(blocks: list, *, exclude_types: set[str] | None = None) -> list[ContentPart]:
-    """Convert a list of blocks to ContentParts, optionally excluding certain types."""
-    parts: list[ContentPart] = []
-    for b in blocks or []:
-        if isinstance(b, dict) and exclude_types and (b.get("type") in exclude_types):
-            continue
-        cp = _to_content_part(b)
-        if cp is not None:
-            parts.append(cp)
-    return parts
-
-
-def _resolve_tool_content(raw) -> str | list[ContentPart]:
-    if isinstance(raw, list):
-        parts = _to_content_parts(raw)
-        return parts or []
-    # For non-list content, pass through string content as-is; otherwise JSON-serialize
-    if isinstance(raw, str) or raw is None:
-        return raw or ""
-    try:
-        return json.dumps(raw, ensure_ascii=False)
-    except Exception:
-        return str(raw)
 
 
 def _ai_guard_ui_url(session_id: str) -> str | None:
@@ -679,14 +548,13 @@ def _fetch_command_expansion(event: dict[str, Any]) -> list[Message]:
 
     logger.debug("expansion: injecting %s %r (%d chars)", kind, command, len(content))
     tool_use_id = f"expansion-{command}"
-    arguments = json.dumps({"command": command, "args": command_args}, ensure_ascii=False)
+    # Model the expansion as a tool call (``command``/``skill``) plus its result,
+    # built through the translator so it matches a real transcript invocation.
+    call = translate.tool_use_to_call(
+        {"id": tool_use_id, "name": kind, "input": {"command": command, "args": command_args}}
+    )
     return [
-        Message(
-            role="assistant",
-            tool_calls=[
-                ToolCall(id=tool_use_id, function=Function(name=kind, arguments=arguments))
-            ],
-        ),
+        Message(role="assistant", tool_calls=[call]),
         Message(role="tool", tool_call_id=tool_use_id, content=content),
     ]
 

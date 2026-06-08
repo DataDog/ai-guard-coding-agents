@@ -28,21 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from aiguard.claude.handler import (
-    ClaudeHandler,
-    _ai_guard_ui_url,
-    _append_tool_result,
-    _blocked_prompt_response,
-    _blocked_tool_response,
-    _entry_to_messages,
-    _fetch_command_expansion,
-    _find_command_file,
-    _load_messages,
-    _resolve_transcript,
-)
-from aiguard.client import AIGuardAbortError
-from aiguard.constants import AIGuardConstants
 from tests.transcripts import (
     TranscriptWriter,
     assistant_text,
@@ -50,6 +35,20 @@ from tests.transcripts import (
     tool_result,
     user_text,
 )
+
+from aiguard.claude.handler import (
+    ClaudeHandler,
+    _ai_guard_ui_url,
+    _append_tool_result,
+    _blocked_prompt_response,
+    _blocked_tool_response,
+    _fetch_command_expansion,
+    _find_command_file,
+    _load_messages,
+    _resolve_transcript,
+)
+from aiguard.client import AIGuardAbortError
+from aiguard.constants import AIGuardConstants
 
 
 def _handler() -> ClaudeHandler:
@@ -326,41 +325,6 @@ class TestResolveTranscript:
         main = transcripts.write_subagent("s", "a1", [user_text("SUB")])
         messages = _load_messages(main, "a1")
         assert messages == [{"role": "user", "content": "SUB"}]
-
-
-class TestEntryToMessages:
-    def test_assistant_text_and_tool_use_both_present(self) -> None:
-        entry = {
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "ok"},
-                    {"type": "tool_use", "id": "t", "name": "N", "input": {}},
-                ],
-            },
-        }
-        msg = _entry_to_messages(entry)[0]
-        assert msg["content"][0]["type"] == "text"
-        assert msg["tool_calls"][0]["id"] == "t"
-
-    def test_user_tool_result_and_text_split_into_two_messages(self) -> None:
-        entry = {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "tu7", "content": "OK"},
-                    {"type": "text", "text": "thanks"},
-                ],
-            },
-        }
-        roles = [m["role"] for m in _entry_to_messages(entry)]
-        assert roles == ["tool", "user"]
-
-    def test_non_conversation_entry_returns_empty(self) -> None:
-        assert _entry_to_messages({"type": "summary"}) == []
-        assert _entry_to_messages({"type": "user", "message": "not a dict"}) == []
 
 
 class TestAppendToolResult:
