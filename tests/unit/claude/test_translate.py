@@ -123,8 +123,8 @@ class TestEntryToMessages:
 
     def test_thinking_block_serialized_as_text_type(self) -> None:
         # AI Guard only accepts ``text``/``image_url`` parts; a ``thinking``
-        # block (real shape: ``thinking`` text plus an opaque ``signature``)
-        # must be carried as ``text``, not its raw type.
+        # block carrying actual reasoning text must be carried as ``text``, not
+        # its raw type.
         block = {"type": "thinking", "thinking": "let me reason", "signature": "abc123"}
         entry = {
             "type": "assistant",
@@ -133,6 +133,17 @@ class TestEntryToMessages:
         part = entry_to_messages(entry)[0]["content"][0]
         assert part["type"] == "text"
         assert json.loads(part["text"]) == block
+
+    def test_signature_only_thinking_block_dropped(self) -> None:
+        # AI Guard cannot handle thinking content. A signature-only ``thinking``
+        # block (empty ``thinking`` text) carries no reasoning, so it is dropped.
+        block = {"type": "thinking", "thinking": "", "signature": "abc123"}
+        entry = {
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [block]},
+        }
+        # The block is the turn's only content, so nothing is emitted.
+        assert entry_to_messages(entry) == []
 
     def test_tool_reference_block_serialized_as_text_type(self) -> None:
         # Real Claude Code shape: ``tool_reference`` blocks appear in user turns

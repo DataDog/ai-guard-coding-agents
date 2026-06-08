@@ -22,7 +22,8 @@ Translation table — Anthropic transcript → AI Guard message(s):
   image                unresolved source              part {type:text} block JSON
   tool_use             {type, id, name, input}        assistant {tool_calls:[…]}
   tool_result          {type, tool_use_id, content}   tool {tool_call_id, content}
-  anything else        thinking, tool_reference, …     part {type:text} block JSON
+  thinking (no text)   {type, signature}              dropped (AI Guard can't handle)
+  anything else        thinking text, tool_reference  part {type:text} block JSON
 
   tool_result.content  "str" / None                   passed through ("" if None)
   tool_result.content  [blocks]                       parts (blocks, as above)
@@ -165,6 +166,12 @@ def _block_to_content_part(block: object) -> ContentPart | None:
     if btype == "text":
         text = block.get("text", "")
         return ContentPart(type="text", text=text) if text else None
+
+    # TODO: AI Guard cannot handle thinking content. Drop signature-only
+    # ``thinking`` blocks (empty ``thinking`` text, just an opaque signature);
+    # blocks carrying actual reasoning text still fall through to JSON text.
+    if btype == "thinking" and not block.get("thinking"):
+        return None
 
     if btype == "image":
         url = _image_block_to_url(block)
