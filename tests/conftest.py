@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from aiguard import utils
-from aiguard.client import AIGuardAbortError, Message
+from aiguard.client import AIGuardAbortError, Evaluation, Message
 from tests.transcripts import TranscriptWriter
 
 logger = logging.getLogger(__name__)
@@ -147,9 +147,19 @@ class FakeAIGuardClient:
     def __init__(self) -> None:
         self.calls: list[tuple[list[Message], dict[str, object]]] = []
         self._aborts: list[AIGuardAbortError] = []
+        self._errors: list[Exception] = []
+        self._results: list[Evaluation] = []
 
     def queue_abort(self, abort: AIGuardAbortError) -> None:
         self._aborts.append(abort)
+
+    def queue_error(self, error: Exception) -> None:
+        """Queue a non-abort exception, simulating an evaluation failure."""
+        self._errors.append(error)
+
+    def queue_result(self, result: Evaluation) -> None:
+        """Queue a returned ``Evaluation`` (e.g. a non-ALLOW monitor-mode verdict)."""
+        self._results.append(result)
 
     @property
     def last_messages(self) -> list[Message]:
@@ -157,10 +167,15 @@ class FakeAIGuardClient:
         assert self.calls, "evaluate() was never called"
         return self.calls[-1][0]
 
-    def evaluate(self, messages: list[Message], options: dict[str, object]) -> None:
+    def evaluate(self, messages: list[Message], options: dict[str, object]) -> Evaluation:
         self.calls.append((list(messages), dict(options) if options else {}))
         if self._aborts:
             raise self._aborts.pop(0)
+        if self._errors:
+            raise self._errors.pop(0)
+        if self._results:
+            return self._results.pop(0)
+        return Evaluation(action="ALLOW", reason="", tags=[], sds=[], tag_probs={})
 
 
 @pytest.fixture(autouse=True)

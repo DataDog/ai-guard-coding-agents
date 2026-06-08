@@ -4,7 +4,7 @@
 # This product includes software developed at Datadog (https://www.datadoghq.com/).
 # Copyright 2026-Present Datadog, Inc.
 
-"""Claude/Anthropic proxy — registers the ``proxy claude`` subcommand."""
+"""Claude Code hook handler — evaluates hook events with Datadog AI Guard."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ddtrace import tracer
+from ddtrace.appsec.ai_guard import Evaluation
 from ddtrace.ext import user
 
 from aiguard import paths, utils
@@ -36,6 +37,10 @@ logger = logging.getLogger("ai_guard")
 # CamelCase → snake_case for the dispatched method suffix
 # (``SessionStart`` → ``session_start``).
 _CAMEL_TO_SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
+
+# Cap the evaluation-error detail surfaced to the model so a large exception
+# message (e.g. a dumped response body) can't flood the context.
+_MAX_ERROR_DETAIL = 128
 
 # Sites where the UI lives at ``app.<site>``. Regional sites
 # (``us3.datadoghq.com``, ``us5.datadoghq.com``, ``ap1.datadoghq.com``, …) already
@@ -138,13 +143,7 @@ class ClaudeHandler(Handler):
                         role="tool", tool_call_id=event.get("tool_use_id", ""), content=skill[1]
                     )
                 )
-        try:
-            self._evaluate_messages(messages, tags)
-        except AIGuardAbortError as e:
-            logger.error("PreToolUse: blocked tool '%s', reason=%s", tool_name, e.reason)
-            return _blocked_tool_response(event, e)
-
-        return None
+        return self._evaluate_messages(event, messages, tags)
 
     @tracer.wrap(name=AIGuardConstants.POST_TOOL, resource=AIGuardConstants.HOOK_RESOURCE)
     def _post_tool_use(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -157,12 +156,7 @@ class ClaudeHandler(Handler):
             event.get("tool_use_id", ""),
             translate.resolve_tool_content(tool_response) or "",
         )
-        try:
-            self._evaluate_messages(messages, tags)
-        except AIGuardAbortError as e:
-            return _blocked_tool_response(event, e)
-
-        return None
+        return self._evaluate_messages(event, messages, tags)
 
     @tracer.wrap(name=AIGuardConstants.POST_TOOL, resource=AIGuardConstants.HOOK_RESOURCE)
     def _post_tool_use_failure(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -170,15 +164,7 @@ class ClaudeHandler(Handler):
         agent_id = event.get("agent_id", "")
         messages = _load_messages(event.get("transcript_path", ""), agent_id)
         _append_tool_result(messages, event.get("tool_use_id", ""), event.get("error", ""))
-
-        try:
-            self._evaluate_messages(messages, tags)
-        except AIGuardAbortError as e:
-            tool_name = event.get("tool_name", "")
-            logger.error("PostToolUseFailure: blocked tool '%s', reason=%s", tool_name, e.reason)
-            return _blocked_tool_response(event, e)
-
-        return None
+        return self._evaluate_messages(event, messages, tags)
 
     @tracer.wrap(
         name=AIGuardConstants.USER_PROMPT_EXPANSION, resource=AIGuardConstants.HOOK_RESOURCE
@@ -195,31 +181,30 @@ class ClaudeHandler(Handler):
         expansion = _fetch_command_expansion(event)
         if expansion:
             messages.extend(expansion)
+        return self._evaluate_messages(event, messages, tags)
+
+    def _evaluate_messages(
+        self, event: dict[str, Any], messages: list[Message], tags: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        if not messages:
+            logger.debug("no messages to evaluate; skipping AI Guard call")
+            return None
+        hook = event.get("hook_event_name", "")
         try:
-            self._evaluate_messages(messages, tags)
-        except AIGuardAbortError as e:
-            logger.error(
-                "UserPromptExpansion: blocked command '%s', reason=%s",
-                event.get("command_name", ""),
-                e.reason,
-            )
-            return _blocked_prompt_response(event, e)
-
-        return None
-
-    def _evaluate_messages(self, messages: list[Message], tags: dict[str, Any]) -> None:
-        if messages:
             logger.debug(
                 "evaluating %d message(s) with AI Guard (block=%s)", len(messages), self._blocking
             )
-            try:
-                self._ai_guard.evaluate(messages, Options(block=self._blocking, tags=tags))
-            except AIGuardAbortError:
-                raise
-            except Exception:
-                logger.error("message evaluation with AI Guard failed", exc_info=True)
-        else:
-            logger.debug("no messages to evaluate; skipping AI Guard call")
+            result = self._ai_guard.evaluate(messages, Options(block=self._blocking, tags=tags))
+            if result["action"] != "ALLOW":
+                return _unsafe_evaluation(event, result)
+
+        except AIGuardAbortError as e:
+            target = event.get("tool_name") or event.get("command_name") or "action"
+            logger.error("%s: blocked %s, reason=%s", hook, target, e.reason)
+            return _unsafe_evaluation(event, e)
+        except Exception as e:
+            logger.error("%s: evaluation failed", hook, exc_info=True)
+            return _failed_evaluation_response(event, e)
         return None
 
 
@@ -392,103 +377,171 @@ def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
     return tags
 
 
-def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
-    event_name = event.get("hook_event_name", "")
-    tool_name = event.get("tool_name", "")
-    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
-    display_reason = "\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m Blocked by security policy"
+def _unsafe_evaluation(
+    event: dict[str, Any], result: Evaluation | AIGuardAbortError
+) -> dict[str, Any]:
+    """Shape the hook response for a non-ALLOW verdict.
 
-    facts = [
-        f"Datadog AI Guard blocked the `{tool_name}` tool call.",
-        f"- Triggering reason: `{abort.reason}`",
-    ]
-    if abort.tag_probs:
-        ranked = sorted(abort.tag_probs.items(), key=lambda kv: kv[1], reverse=True)
+    Called with either a blocking-mode ``AIGuardAbortError`` (``blocked=True``)
+    or a monitor-mode non-ALLOW ``Evaluation`` (``blocked=False``). The model
+    always receives the verdict via ``additionalContext``; only the blocking
+    case adds a ``deny``/``block`` decision. A blocked ``UserPromptExpansion`` is
+    special-cased: it runs no model turn, so its detail rides in ``reason``.
+    """
+    event_name = event.get("hook_event_name", "")
+    if isinstance(result, AIGuardAbortError):
+        blocked = True
+        reason, tag_probs = result.reason, result.tag_probs
+    else:
+        blocked = False
+        reason, tag_probs = result["reason"], result["tag_probs"]
+    tool_name = event.get("tool_name", "")
+    command = event.get("command_name") or event.get("command", "")
+
+    display_reason = "\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m "
+    if blocked:
+        display_reason += "Blocked by security policy"
+    else:
+        display_reason += "Security policy violated"
+
+    header = []
+    if tool_name:
+        target = f"the `{tool_name}` tool call"
+    elif command:
+        target = f"the `/{command}` command"
+    else:
+        target = "this action"
+
+    if blocked:
+        header.append(f"Datadog AI Guard blocked {target}.")
+    else:
+        header.append(f"Datadog AI Guard evaluated {target} as unsafe.")
+
+    header.append(f"- Reason: `{reason}`")
+    if tag_probs:
+        ranked = sorted(tag_probs.items(), key=lambda kv: kv[1], reverse=True)
         top_tag, top_prob = ranked[0]
         breakdown = ", ".join(f"`{tag}` ({prob * 100:.0f}%)" for tag, prob in ranked)
-        facts.append(f"- Most likely risk: `{top_tag}` at {top_prob * 100:.0f}% confidence")
-        facts.append(f"- Risk breakdown (highest first): {breakdown}")
+        header.append(f"- Most likely risk: `{top_tag}` at {top_prob * 100:.0f}% confidence")
+        header.append(f"- Risk breakdown (highest first): {breakdown}")
 
+    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
     if ui_url:
-        facts.append(f"- Investigate in Datadog: {ui_url}")
+        header.append(f"- Investigate in Datadog: {ui_url}")
 
-    instructions = [
-        "",
-        "In your next reply, write a short user-facing message that:",
-        "1. States that Datadog AI Guard blocked the call to the tool above.",
+    # A blocked slash-command/skill expansion erases the command and runs no
+    # model turn, so additionalContext is never read — the detail must ride in
+    # ``reason`` (which Claude Code shows the user directly).
+    if blocked and event_name == "UserPromptExpansion":
+        # Banner, a blank line, then the detail lines built above.
+        reason = "\n".join([display_reason, "", *header])
+        return {
+            "decision": "block",
+            "reason": reason,
+            "hookSpecificOutput": {"hookEventName": event_name},
+        }
+
+    additional_context = ["", "In your next reply, write a short user-facing message that:"]
+
+    if blocked:
+        additional_context.append(
+            "1. States that Datadog AI Guard blocked the call to the tool above."
+        )
+    else:
+        additional_context.append("1. States that Datadog AI Guard evaluated the action as unsafe.")
+
+    additional_context += [
         "2. Names the most likely risk category and includes its confidence as a percentage, "
-        "also include other categories if they have high probabilities."
+        "also include other categories if they have high probabilities.",
         "3. Suggests sensible next steps (rephrase the request, review the input, inspect the "
         "affected file, or contact the user's security team).",
         "4. If a Datadog investigation link is provided above, include it in the response.",
         "Do not retry the call automatically. Do not invent details beyond what is listed above.",
     ]
 
-    parts = facts + instructions
-
+    verb = "blocked" if blocked else "flagged"
     if tool_name == "Skill":
         skill_folder = _skill_folder(event)
         location = f" located at `{skill_folder}`" if skill_folder else ""
-        parts += [
+        additional_context += [
             "",
-            f"The blocked call was a skill load{location}. Also tell the user to remove this skill "
+            f"The {verb} call was a skill load{location}. Also tell the user to remove this skill "
             "and audit any other recently installed skills. Do not delete the skill yourself, and "
             "do not attempt to load it again in this session.",
         ]
-
-    model_context = "\n".join(parts)
+    elif event_name == "UserPromptExpansion":
+        expansion_folder = _expansion_folder(event)
+        location = f" located at `{expansion_folder}`" if expansion_folder else ""
+        additional_context += [
+            "",
+            f"The {verb} call was a command load{location}. Also tell the user to remove "
+            "this command and audit any other recently installed commands. Do not delete it "
+            "yourself.",
+        ]
 
     hook_specific_output: dict = {
         "hookEventName": event_name,
-        "additionalContext": model_context,
+        "additionalContext": "\n".join(header + additional_context),
     }
-    result: dict = {
+    response: dict = {
         "hookSpecificOutput": hook_specific_output,
     }
-    if event_name == "PreToolUse":
-        hook_specific_output["permissionDecision"] = "deny"
-        hook_specific_output["permissionDecisionReason"] = display_reason
-    else:
-        result["decision"] = "block"
-        result["reason"] = display_reason
 
-    return result
+    if blocked:
+        if event_name == "PreToolUse":
+            hook_specific_output["permissionDecision"] = "deny"
+            hook_specific_output["permissionDecisionReason"] = display_reason
+        else:
+            response["decision"] = "block"
+            response["reason"] = display_reason
+
+    return response
 
 
-def _blocked_prompt_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
-    """Block a slash command / skill expansion (``UserPromptExpansion``).
+def _failed_evaluation_response(event: dict[str, Any], cause: Exception) -> dict[str, Any]:
+    """Tell the model that AI Guard could not evaluate this call (fail-open).
 
-    Unlike a blocked tool call — where the turn continues and Claude can narrate
-    the block to the user — ``decision: "block"`` here erases the command from
-    context and no model turn follows. So there is no point routing guidance to
-    the model via ``additionalContext``; the explanation must go in ``reason``,
-    which Claude Code surfaces directly to the user. We pack the command name,
-    the top risk + confidence, and the investigate link into that reason.
+    An evaluation *error* (network failure, malformed response, …) is not a
+    block — AI Guard never reached a verdict. We must not stop the action over
+    our own failure, so this response carries no ``deny``/``block`` decision; it
+    only adds ``additionalContext`` instructing the model to notify the user
+    that the call proceeded *without* a security check, and to describe what
+    went wrong.
     """
+    event_name = event.get("hook_event_name", "")
+    tool_name = event.get("tool_name", "")
     command = event.get("command_name") or event.get("command", "")
-    target = f"`/{command}`" if command else "this command"
-    lines = [
-        f"\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m blocked {target} by security policy.",
-        f"Reason: {abort.reason}",
-    ]
-    if abort.tag_probs:
-        ranked = sorted(abort.tag_probs.items(), key=lambda kv: kv[1], reverse=True)
-        top_tag, top_prob = ranked[0]
-        lines.append(f"Most likely risk: {top_tag} at {top_prob * 100:.0f}% confidence")
-        high = [f"{tag} ({prob * 100:.0f}%)" for tag, prob in ranked if prob >= 0.5]
-        if len(high) > 1:
-            lines.append(f"Other high-confidence risks: {', '.join(high[1:])}")
+    if tool_name:
+        target = f"the `{tool_name}` tool call"
+    elif command:
+        target = f"the `/{command}` command"
+    else:
+        target = "this action"
 
-    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
-    if ui_url:
-        lines.append(f"Investigate in Datadog: {ui_url}")
+    # ``RuntimeError: connection refused`` etc. — trimmed so a giant exception
+    # message can't flood the model context.
+    detail = f"{type(cause).__name__}: {cause}".strip().rstrip(":").strip()
+    if len(detail) > _MAX_ERROR_DETAIL:
+        detail = detail[:_MAX_ERROR_DETAIL] + " […]"
+
+    parts = [
+        f"Datadog AI Guard could not evaluate {target}: an internal error occurred, so this "
+        "call was NOT checked against the security policy.",
+        f"- Error: `{detail}`",
+        "",
+        "In your next reply, write a short user-facing message that:",
+        "1. States that Datadog AI Guard could not evaluate the call above because of an error.",
+        "2. Describes what went wrong, using the error detail above.",
+        "3. Makes clear the call was allowed to proceed without a security check.",
+        "4. Suggests contacting the user's security team if it keeps happening.",
+        "Do not invent details beyond what is listed above.",
+    ]
 
     return {
-        "decision": "block",
-        "reason": "\n".join(lines),
         "hookSpecificOutput": {
-            "hookEventName": event.get("hook_event_name", ""),
-        },
+            "hookEventName": event_name,
+            "additionalContext": "\n".join(parts),
+        }
     }
 
 
@@ -665,6 +718,17 @@ def _find_command_file(cwd: str, command: str) -> Path | None:
 
     logger.debug("find_command: %r not found (checked %d root(s))", command, len(roots))
     return None
+
+
+def _expansion_folder(event: dict[str, Any]) -> Path | None:
+    cwd = event.get("cwd", "")
+    command = event.get("command_name", "")
+    if command:
+        return _find_command_file(cwd, command) or _find_skill_folder(cwd, command)
+    else:
+        tool_input = event.get("tool_input", {})
+        skill = tool_input.get("skill", None)
+        return _find_skill_folder(cwd, skill)
 
 
 def _skill_folder(event: dict[str, Any]) -> Path | None:
