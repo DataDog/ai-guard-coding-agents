@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.5.0...v0.5.1) (2026-06-08)
+
+
+### 🐛 Bug Fixes
+
+* map Anthropic content blocks to valid AI Guard part types ([#39](https://github.com/DataDog/ai-guard-coding-agents/issues/39)) ([0a9aef5](https://github.com/DataDog/ai-guard-coding-agents/commit/0a9aef55f3b7cd9b1ea59fd711bb2860e242dee8))
+
 ## [0.5.0](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.4.0...v0.5.0) (2026-06-07)
 
 
