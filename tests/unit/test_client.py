@@ -16,6 +16,7 @@ fire, and assert on the resulting ``ai_guard`` span.
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -30,7 +31,7 @@ from aiguard.client import (
     CodingAgentAIGuardClient,
     Message,
     _AIGuardSpanProcessor,
-    _truncate_coding_agent_messages,
+    _redact_coding_agent_messages,
 )
 from aiguard.constants import AIGuardConstants
 
@@ -60,12 +61,13 @@ class _FakeResponse:
         }
 
 
-_LAST_CONTENT = "LAST tool output, long enough to truncate"
+_LAST_CONTENT = "LAST tool output, long enough to redact"
+_REDACTED = "[redacted]"
 
 
 def _messages() -> list[Message]:
     return [
-        Message(role="user", content="FIRST user message, long enough to truncate"),
+        Message(role="user", content="FIRST user message, long enough to redact"),
         Message(role="assistant", content="MIDDLE assistant chatter"),
         Message(role="tool", tool_call_id="t1", content=_LAST_CONTENT),
     ]
@@ -151,28 +153,26 @@ class TestTagInjection:
 
 
 class TestCodingAgentPrivacy:
-    """CODING_AGENT keeps first-user + last, action-dependent content stripping."""
+    """CODING_AGENT keeps every message but unconditionally redacts content."""
 
-    def test_allow_keeps_first_user_and_last_and_truncates_last(
+    def test_allow_keeps_all_messages_and_redacts_content(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level("DEBUG", logger="ai_guard"):
             span, blocked = _evaluate(monkeypatch, privacy_mode="CODING_AGENT", action="ALLOW")
         messages = _struct_messages(span)
-        assert [m.get("role") for m in messages] == ["user", "tool"]
-        assert "[truncated" in messages[-1]["content"]
+        assert [m.get("role") for m in messages] == ["user", "assistant", "tool"]
+        assert all(m["content"] == _REDACTED for m in messages)
         assert blocked is False
-        # The processor logs that it actually ran the privacy truncation.
-        assert any(
-            "CODING_AGENT privacy truncation" in r.message and "action=ALLOW" in r.message
-            for r in caplog.records
-        )
+        # The processor logs that it actually ran the privacy redaction.
+        assert any("CODING_AGENT privacy redaction" in r.message for r in caplog.records)
 
-    def test_block_keeps_last_message_content_intact(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_block_also_redacts_content(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Redaction is unconditional, so even a non-ALLOW block redacts content.
         span, blocked = _evaluate(monkeypatch, privacy_mode="CODING_AGENT", action="DENY")
         messages = _struct_messages(span)
-        assert [m.get("role") for m in messages] == ["user", "tool"]
-        assert messages[-1]["content"] == _LAST_CONTENT
+        assert [m.get("role") for m in messages] == ["user", "assistant", "tool"]
+        assert all(m["content"] == _REDACTED for m in messages)
         assert span.get_tag("ai_guard.blocked") == "true"
         assert blocked is True
 
@@ -186,25 +186,42 @@ class TestDefaultMode:
         assert [m.get("role") for m in messages] == ["user", "assistant", "tool"]
 
 
-class TestTruncationByAction:
-    """Content is kept only for a real non-ALLOW action; ALLOW/absent truncate."""
+class TestRedaction:
+    """Redaction keeps every message and replaces all content with the placeholder."""
 
-    def test_deny_keeps_full_content(self) -> None:
-        result = _truncate_coding_agent_messages(_messages(), "DENY")
-        assert [m.get("role") for m in result] == ["user", "tool"]
-        assert result[-1]["content"] == _LAST_CONTENT
+    def test_keeps_all_messages_and_redacts_content(self) -> None:
+        result = _redact_coding_agent_messages(_messages())
+        assert [m.get("role") for m in result] == ["user", "assistant", "tool"]
+        assert all(m["content"] == _REDACTED for m in result)
 
-    def test_allow_truncates_content(self) -> None:
-        result = _truncate_coding_agent_messages(_messages(), "ALLOW")
-        assert [m.get("role") for m in result] == ["user", "tool"]
-        assert "[truncated" in result[-1]["content"]
+    def test_empty_messages_pass_through(self) -> None:
+        assert _redact_coding_agent_messages([]) == []
 
-    def test_missing_action_truncates_content(self) -> None:
-        # An AI Guard error finishes the span with no action recorded; privacy
-        # mode must still strip content rather than leak it.
-        result = _truncate_coding_agent_messages(_messages(), None)
-        assert [m.get("role") for m in result] == ["user", "tool"]
-        assert "[truncated" in result[-1]["content"]
+    def test_json_object_keeps_top_level_keys_with_redacted_values(self) -> None:
+        content = json.dumps({"path": "/etc/passwd", "nested": {"a": 1}, "count": 7})
+        result = _redact_coding_agent_messages([Message(role="user", content=content)])
+        assert json.loads(result[0]["content"]) == {
+            "path": _REDACTED,
+            "nested": _REDACTED,
+            "count": _REDACTED,
+        }
+
+    def test_json_array_collapses_to_single_count_entry(self) -> None:
+        content = json.dumps(["a", "b", "c"])
+        result = _redact_coding_agent_messages([Message(role="user", content=content)])
+        assert json.loads(result[0]["content"]) == ["[redacted 3 entries]"]
+
+    def test_multipart_redacts_text_and_image_url(self) -> None:
+        # image_url parts carry a hosted URL or base64 data: payload that must
+        # be redacted too, not just text parts.
+        content = [
+            {"type": "text", "text": "secret prompt"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRET"}},
+        ]
+        result = _redact_coding_agent_messages([Message(role="user", content=content)])
+        redacted_parts = result[0]["content"]
+        assert redacted_parts[0]["text"] == _REDACTED
+        assert redacted_parts[1]["image_url"]["url"] == _REDACTED
 
 
 class TestPrivacyModeResolution:

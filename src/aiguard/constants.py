@@ -32,9 +32,8 @@ class AIGuardConstants(object):
 
     # Privacy mode — forwarded to the AI Guard client as its ``mode`` argument,
     # controlling what message content is surfaced in the UI. CODING_AGENT (our
-    # default) only keeps full contents for failed (blocked) evaluations and
-    # strips tool arguments/results when a call is allowed; DEFAULT keeps full
-    # contents for every evaluation.
+    # default) redacts every message's content to ``[redacted]`` regardless of
+    # the evaluation decision; DEFAULT keeps full contents for every evaluation.
     PRIVACY_MODE_ENV = "DD_AI_GUARD_PRIVACY_MODE"
     PRIVACY_MODE_CODING_AGENT = "CODING_AGENT"
     PRIVACY_MODE_DEFAULT = "DEFAULT"

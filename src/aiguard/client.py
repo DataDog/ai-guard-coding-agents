@@ -13,10 +13,10 @@ so instead of reimplementing ``evaluate`` we hook the ``ai_guard`` span via a
 
 * ``on_span_start`` applies ``Options.tags`` to the span (the released client
   ignores them) so spans stay queryable by session/user/model.
-* ``on_span_finish`` reduces the meta-struct messages for ``CODING_AGENT``
-  privacy mode once the action is known (first user + last message; the kept
-  messages' content is stripped on ``ALLOW`` or when no action was recorded, and
-  retained only for a real non-``ALLOW`` block).
+* ``on_span_finish`` redacts the meta-struct messages for ``CODING_AGENT``
+  privacy mode: every message is kept but its content is replaced with
+  ``[redacted]``. Redaction is unconditional (it does not depend on the AI
+  Guard decision) so privacy mode can never surface full message content.
 
 Both callbacks run synchronously inside the inherited ``evaluate`` — a per-call
 context var carries the tags and original messages to them, while the processor
@@ -50,7 +50,6 @@ from ddtrace.appsec.ai_guard import (
     Message,
     ToolCall,
 )
-from ddtrace.appsec.ai_guard._api_client import ALLOW
 from ddtrace.internal.settings.asm import ai_guard_config
 
 from aiguard.constants import AIGuardConstants
@@ -71,7 +70,7 @@ __all__ = [
 
 logger = logging.getLogger("ai_guard")
 
-TRUNCATE_PREFIX_LENGTH = 16
+REDACTED_PLACEHOLDER = "[redacted]"
 
 _processor_registered = False
 
@@ -104,37 +103,17 @@ def _ensure_processor_registered() -> None:
         _processor_registered = True
 
 
-def _truncate_string(value: str) -> str:
-    if len(value) <= TRUNCATE_PREFIX_LENGTH:
-        return value
-    return (
-        value[:TRUNCATE_PREFIX_LENGTH] + f" [truncated {len(value) - TRUNCATE_PREFIX_LENGTH} chars]"
-    )
-
-
-def _truncate_json(value: Any) -> Any:
-    """Recursively truncate string leaves of a parsed JSON value.
-
-    Object keys are left intact; only string values (anywhere in the tree) are
-    truncated. Numbers, booleans and ``null`` pass through unchanged.
-    """
-    if isinstance(value, str):
-        return _truncate_string(value)
-    if isinstance(value, list):
-        return [_truncate_json(item) for item in value]
+def _redact_json(value: Any) -> Any:
+    """Redact a parsed JSON value, keeping only its top-level shape."""
     if isinstance(value, dict):
-        return {key: _truncate_json(val) for key, val in value.items()}
-    return value
+        return {key: REDACTED_PLACEHOLDER for key in value}
+    if isinstance(value, list):
+        return [f"[redacted {len(value)} entries]"]
+    return REDACTED_PLACEHOLDER
 
 
-def _truncate_text(value: str) -> str:
-    """Truncate ``value``, descending into JSON structure when it is one.
-
-    Tool arguments/results are frequently JSON. When ``value`` is a JSON object
-    or array we truncate its string leaves (keeping keys and shape) and
-    re-serialize, so the structure stays readable; otherwise the raw string is
-    truncated.
-    """
+def _redact_text(value: str) -> str:
+    """Redact ``value``, descending into JSON structure when it is one."""
     stripped = value.strip()
     if stripped[:1] in ("{", "["):
         try:
@@ -142,68 +121,50 @@ def _truncate_text(value: str) -> str:
         except (json.JSONDecodeError, ValueError):
             parsed = None
         if isinstance(parsed, (dict, list)):
-            return json.dumps(_truncate_json(parsed), ensure_ascii=False)
-    return _truncate_string(value)
+            return json.dumps(_redact_json(parsed), ensure_ascii=False)
+    return REDACTED_PLACEHOLDER
 
 
-def _truncate_message_content(message: Message) -> Message:
+def _redact_message_content(message: Message) -> Message:
     # deepcopy so the original message cannot be mutated before serialization
     message = deepcopy(message)
     content = message.get("content")
     if isinstance(content, str):
-        message["content"] = _truncate_text(content)
+        message["content"] = _redact_text(content)
     elif isinstance(content, list):
-        # Multipart content: truncate the text of each part, leaving non-text
-        # parts (e.g. image_url) untouched.
+        # Multipart content: redact every part. Text parts get the placeholder;
+        # image_url parts carry a hosted URL or a base64 ``data:`` payload that
+        # would otherwise leak, so redact the url too.
         for part in content:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                part["text"] = _truncate_text(part["text"])
-    # Tool calls carry their arguments as a (usually JSON) string; truncate them
-    # too so large/sensitive call payloads aren't surfaced on an ALLOW.
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
+                part["text"] = _redact_text(part["text"])
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                image_url["url"] = REDACTED_PLACEHOLDER
+    # Tool calls carry their arguments as a (usually JSON) string; redact them
+    # too so large/sensitive call payloads aren't surfaced.
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
         for call in tool_calls:
             function = call.get("function") if isinstance(call, dict) else None
             if isinstance(function, dict) and isinstance(function.get("arguments"), str):
-                function["arguments"] = _truncate_text(function["arguments"])
+                function["arguments"] = _redact_text(function["arguments"])
     return message
 
 
-def _truncate_coding_agent_messages(
-    messages: list[Message], action: Optional[str]
-) -> list[Message]:
-    """Reduce ``messages`` for ``CODING_AGENT`` privacy mode.
+def _redact_coding_agent_messages(messages: list[Message]) -> list[Message]:
+    """Redact ``messages`` for ``CODING_AGENT`` privacy mode.
 
-    Keep only the first user message and the last message, dropping everything in
-    between to avoid surfacing large amounts of (potentially sensitive) context.
-    Full content is retained only for a real non-``ALLOW`` decision (a block), so
-    investigators see what was flagged. On an ``ALLOW`` decision — or when no
-    action was recorded (e.g. an AI Guard error before the decision) — the kept
-    messages' content is stripped so privacy mode isn't defeated by the error path.
+    Every message is kept (order and shape preserved) but its content is
+    redacted to ``[redacted]`` so large amounts of (potentially sensitive)
+    context aren't surfaced.
     """
     if not messages:
         return messages
 
-    # Retain full content only when AI Guard returned an actual non-ALLOW action.
-    truncate = not action or action == ALLOW
-    last_message = messages[-1]
-    first_user_message = next(
-        (message for message in messages if message.get("role") == "user"), None
-    )
-
-    result_messages: list[Message] = []
-    if first_user_message is not None:
-        result_messages.append(
-            _truncate_message_content(first_user_message) if truncate else first_user_message
-        )
-
-    # When the first user message is also the last message keep a single copy.
-    if first_user_message is not last_message:
-        result_messages.append(
-            _truncate_message_content(last_message) if truncate else last_message
-        )
-
-    return result_messages
+    return [_redact_message_content(message) for message in messages]
 
 
 class _Response:
@@ -263,15 +224,11 @@ class _AIGuardSpanProcessor(SpanProcessor):
         struct = span._get_struct_tag(AI_GUARD.STRUCT)
         if not struct:
             return
-        # The action tag is set by the inherited evaluate() before the span
-        # finishes; absent only on an error path, where content is truncated so an
-        # AI Guard failure can't surface full messages.
-        action = span.get_tag(AI_GUARD.ACTION_TAG)
-        truncated = _truncate_coding_agent_messages(ctx["messages"], action)
+        redacted = _redact_coding_agent_messages(ctx["messages"])
         new_struct = dict(struct)
-        new_struct["messages"] = truncated
+        new_struct["messages"] = redacted
         span._set_struct_tag(AI_GUARD.STRUCT, new_struct)
-        logger.debug("ai_guard span finish: CODING_AGENT privacy truncation (action=%s)", action)
+        logger.debug("ai_guard span finish: CODING_AGENT privacy redaction")
 
     def shutdown(self, timeout: Optional[float]) -> None:
         pass
