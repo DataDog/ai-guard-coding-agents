@@ -19,7 +19,7 @@ Real-time guardrails for coding agents. The CLI wires hooks into the agent's lif
 │   ├── __main__.py                 # `python -m aiguard` → cli.main (PyInstaller entry point).
 │   ├── client.py                   # Vendored AI Guard client: wraps the released
 │   │                               #   ddtrace AIGuardClient with coding-agent tagging, CODING_AGENT
-│   │                               #   privacy-mode truncation (span processor), and proxy support.
+│   │                               #   privacy-mode redaction (span processor), and proxy support.
 │   ├── constants.py                # AIGuardConstants — span/op names, tag keys, privacy modes,
 │   │                               #   Claude min version, legacy proxy/service constants (teardown only)
 │   ├── storage.py                  # config.env read/write: load_config / save_config / load_into_environ.
@@ -111,7 +111,7 @@ The handler rebuilds history from **Claude Code's own JSONL transcripts** — ai
 
 `new_ai_guard_client()` returns a `CodingAgentAIGuardClient`, a thin subclass of the released `ddtrace.appsec.ai_guard.AIGuardClient`. The released client has no seam for the two coding-agent features we need, so rather than reimplement `evaluate` we layer them on:
 
-- **Span tagging + privacy mode** — a `SpanProcessor` (registered once, lazily) hooks the `ai_guard` evaluation span. `on_span_start` applies `Options.tags` to the span (the released client ignores them) so spans stay queryable by session/user/model. `on_span_finish` reduces the meta-struct messages for `CODING_AGENT` privacy mode: it keeps only the first user message and the last message, and strips their content on `ALLOW` (or when no action was recorded, e.g. an error path) — full content is retained only for a real non-`ALLOW` block. A per-evaluation `contextvars.ContextVar` carries the tags + original messages into the synchronous callbacks.
+- **Span tagging + privacy mode** — a `SpanProcessor` (registered once, lazily) hooks the `ai_guard` evaluation span. `on_span_start` applies `Options.tags` to the span (the released client ignores them) so spans stay queryable by session/user/model. `on_span_finish` redacts the meta-struct messages for `CODING_AGENT` privacy mode: it keeps every message (order and shape preserved) but replaces each message's content with `[redacted]`. Redaction is unconditional — it does not depend on the AI Guard decision — so privacy mode can never surface full content, including on the error path where no action was recorded. JSON content keeps only its top-level object keys (values redacted) and collapses arrays to a single `[redacted N entries]` entry. A per-evaluation `contextvars.ContextVar` carries the tags + original messages into the synchronous callbacks.
 - **Proxy support** — `_execute_request` is overridden to use `urllib` (whose `ProxyHandler` honours `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`), because ddtrace's HTTP helper has no proxy support.
 
 `Options` is extended here too (`block` plus `tags`). Credentials/endpoint resolve from `DD_API_KEY` / `DD_APP_KEY` / `DD_SITE` (or an explicit AI Guard endpoint) via ddtrace `config`.

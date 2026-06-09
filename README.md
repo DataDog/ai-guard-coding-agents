@@ -131,10 +131,10 @@ forensic trail.
 
 `DD_AI_GUARD_PRIVACY_MODE` controls how much of the coding trajectory is surfaced in the Datadog AI Guard UI. 
 
-| Value          | Behavior                                                                                                  |
-|----------------|-----------------------------------------------------------------------------------------------------------|
-| `CODING_AGENT` | *Default*. Message contents are shown only for denied evaluations; on allowed calls results are stripped. |
-| `DEFAULT`      | Full conversation and message contents are shown for every evaluation.                                    |
+| Value          | Behavior                                                                      |
+|----------------|-------------------------------------------------------------------------------|
+| `CODING_AGENT` | *Default*. Every message is kept but its content is redacted to `[redacted]`. |
+| `DEFAULT`      | Full conversation and message contents are shown for every evaluation.        |
 
 
 ## Contributing
