@@ -211,6 +211,18 @@ class TestRedaction:
         result = _redact_coding_agent_messages([Message(role="user", content=content)])
         assert json.loads(result[0]["content"]) == ["[redacted 3 entries]"]
 
+    def test_multipart_redacts_text_and_image_url(self) -> None:
+        # image_url parts carry a hosted URL or base64 data: payload that must
+        # be redacted too, not just text parts.
+        content = [
+            {"type": "text", "text": "secret prompt"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,SECRET"}},
+        ]
+        result = _redact_coding_agent_messages([Message(role="user", content=content)])
+        redacted_parts = result[0]["content"]
+        assert redacted_parts[0]["text"] == _REDACTED
+        assert redacted_parts[1]["image_url"]["url"] == _REDACTED
+
 
 class TestPrivacyModeResolution:
     """The processor resolves ``DD_AI_GUARD_PRIVACY_MODE`` in its constructor."""

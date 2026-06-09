@@ -132,11 +132,17 @@ def _redact_message_content(message: Message) -> Message:
     if isinstance(content, str):
         message["content"] = _redact_text(content)
     elif isinstance(content, list):
-        # Multipart content: redact the text of each part, leaving non-text
-        # parts (e.g. image_url) untouched.
+        # Multipart content: redact every part. Text parts get the placeholder;
+        # image_url parts carry a hosted URL or a base64 ``data:`` payload that
+        # would otherwise leak, so redact the url too.
         for part in content:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
                 part["text"] = _redact_text(part["text"])
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                image_url["url"] = REDACTED_PLACEHOLDER
     # Tool calls carry their arguments as a (usually JSON) string; redact them
     # too so large/sensitive call payloads aren't surfaced.
     tool_calls = message.get("tool_calls")
