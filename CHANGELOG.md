@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.5.1...v0.5.2) (2026-06-09)
+
+
+### 🐛 Bug Fixes
+
+* redaction of coding agent trajectories ([#42](https://github.com/DataDog/ai-guard-coding-agents/issues/42)) ([8e3c01c](https://github.com/DataDog/ai-guard-coding-agents/commit/8e3c01c9886fa3de1424c97a27f7ea1137b1f4ad))
+
 ## [0.5.1](https://github.com/DataDog/ai-guard-coding-agents/compare/v0.5.0...v0.5.1) (2026-06-08)
 
 
