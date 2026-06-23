@@ -91,3 +91,144 @@ class TranscriptWriter:
         path = self.project_dir / f"{session_id}.jsonl"
         path.write_text(text, encoding="utf-8")
         return str(path)
+
+
+# ── Codex CLI rollout transcripts ──────────────────────────────────────────────
+#
+# Codex stores each session as a rollout JSONL file
+# (``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl``). Every line is
+# ``{"type", "payload"}`` and the conversation lives in ``response_item`` lines
+# using the OpenAI Responses API item shape.
+
+
+def codex_session_meta(
+    session_id: str = "sess-1", base_instructions: str | None = None
+) -> dict[str, Any]:
+    """A ``session_meta`` line.
+
+    With ``base_instructions`` set, carries the base system prompt the translator
+    folds into the system message; otherwise it is metadata-only.
+    """
+    payload: dict[str, Any] = {"id": session_id, "cli_version": "0.140.0"}
+    if base_instructions is not None:
+        payload["base_instructions"] = {"text": base_instructions}
+    return {"type": "session_meta", "payload": payload}
+
+
+def codex_user_message(text: str) -> dict[str, Any]:
+    """A user ``message`` response item (``input_text`` content)."""
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        },
+    }
+
+
+def codex_assistant_message(text: str) -> dict[str, Any]:
+    """An assistant ``message`` response item (``output_text`` content)."""
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        },
+    }
+
+
+def codex_developer_message(text: str) -> dict[str, Any]:
+    """A developer ``message`` response item (Codex env/permission instructions)."""
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": text}],
+        },
+    }
+
+
+def codex_function_call(call_id: str, name: str, arguments: str) -> dict[str, Any]:
+    """A ``function_call`` response item. ``arguments`` is a JSON *string*."""
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": name,
+            "arguments": arguments,
+            "call_id": call_id,
+        },
+    }
+
+
+def codex_function_call_output(call_id: str, output: str) -> dict[str, Any]:
+    """A ``function_call_output`` response item."""
+    return {
+        "type": "response_item",
+        "payload": {"type": "function_call_output", "call_id": call_id, "output": output},
+    }
+
+
+def codex_custom_tool_call(call_id: str, name: str, tool_input: str) -> dict[str, Any]:
+    """A ``custom_tool_call`` response item (e.g. ``apply_patch``).
+
+    Unlike ``function_call``, the payload is a raw string in ``input`` (not a
+    JSON ``arguments`` string).
+    """
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": name,
+            "input": tool_input,
+        },
+    }
+
+
+def codex_custom_tool_call_output(call_id: str, output: str) -> dict[str, Any]:
+    """A ``custom_tool_call_output`` response item."""
+    return {
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call_output", "call_id": call_id, "output": output},
+    }
+
+
+def codex_reasoning() -> dict[str, Any]:
+    """A ``reasoning`` response item (dropped by the translator)."""
+    return {
+        "type": "response_item",
+        "payload": {"type": "reasoning", "summary": [], "content": None, "encrypted_content": "xx"},
+    }
+
+
+def codex_event_msg(msg_type: str = "agent_message", message: str = "hi") -> dict[str, Any]:
+    """An ``event_msg`` line (TUI mirror; dropped by the translator)."""
+    return {"type": "event_msg", "payload": {"type": msg_type, "message": message}}
+
+
+class CodexRolloutWriter:
+    """Writes Codex CLI rollout JSONL transcripts under a fake sessions directory."""
+
+    def __init__(self, sessions_dir: Path) -> None:
+        self.sessions_dir = sessions_dir
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _dump(entries: list[dict[str, Any]]) -> str:
+        return "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries)
+
+    def write(self, session_id: str, entries: list[dict[str, Any]]) -> str:
+        path = self.sessions_dir / f"rollout-{session_id}.jsonl"
+        path.write_text(self._dump(entries), encoding="utf-8")
+        return str(path)
+
+    def write_raw(self, session_id: str, text: str) -> str:
+        """Write arbitrary bytes (for malformed-line / tolerance tests)."""
+        path = self.sessions_dir / f"rollout-{session_id}.jsonl"
+        path.write_text(text, encoding="utf-8")
+        return str(path)

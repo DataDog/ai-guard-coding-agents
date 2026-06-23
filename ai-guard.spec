@@ -31,8 +31,15 @@ a = Analysis(
         # The Claude handler is imported lazily by the hook command, so the
         # static analyser can't see it.
         "aiguard.claude.handler",
+        "aiguard.codex",
+        "aiguard.codex.installer",
+        # The Codex handler/translator are imported lazily by the hook command,
+        # so the static analyser can't see them.
+        "aiguard.codex.handler",
+        "aiguard.codex.translate",
         "aiguard.hooks",
         "aiguard.hooks.hooks",
+        "aiguard.hooks.common",
         "aiguard.installer",
         "aiguard.installer.agent",
         "aiguard.installer.installer",

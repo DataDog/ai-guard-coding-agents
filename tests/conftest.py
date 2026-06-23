@@ -17,7 +17,7 @@ import pytest
 
 from aiguard import utils
 from aiguard.client import AIGuardAbortError, Message
-from tests.transcripts import TranscriptWriter
+from tests.transcripts import CodexRolloutWriter, TranscriptWriter
 
 logger = logging.getLogger(__name__)
 
@@ -172,11 +172,12 @@ def fake_ai_guard(monkeypatch: pytest.MonkeyPatch) -> FakeAIGuardClient:
     or queue an abort take ``fake_ai_guard`` as a parameter.
     """
     fake = FakeAIGuardClient()
-    monkeypatch.setattr(
-        "aiguard.claude.handler.new_ai_guard_client",
-        lambda mode=None, meta=None: fake,
-        raising=False,
-    )
+    for module in ("aiguard.claude.handler", "aiguard.codex.handler"):
+        monkeypatch.setattr(
+            f"{module}.new_ai_guard_client",
+            lambda mode=None, meta=None: fake,
+            raising=False,
+        )
     return fake
 
 
@@ -187,6 +188,12 @@ def fake_ai_guard(monkeypatch: pytest.MonkeyPatch) -> FakeAIGuardClient:
 def transcripts(tmp_path: Path) -> TranscriptWriter:
     """A :class:`TranscriptWriter` rooted at an isolated fake project directory."""
     return TranscriptWriter(tmp_path / "projects" / "test-project")
+
+
+@pytest.fixture
+def codex_transcripts(tmp_path: Path) -> CodexRolloutWriter:
+    """A :class:`CodexRolloutWriter` rooted at an isolated fake sessions directory."""
+    return CodexRolloutWriter(tmp_path / "codex-sessions")
 
 
 # ── Misc ──────────────────────────────────────────────────────────────────────

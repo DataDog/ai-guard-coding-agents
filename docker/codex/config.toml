@@ -1,0 +1,14 @@
+# AI Guard reference Codex config for the demo container.
+#
+# Codex only runs a non-managed command hook after the user reviews and trusts
+# it (it records the hook against a hash and re-prompts when it changes). That
+# interactive trust step is impossible in a headless container, so we both
+# enable the hooks feature and bypass the trust gate here. Do NOT copy
+# bypass_hook_trust into a real workstation config — on a real machine, run
+# `ai-guard install` and approve the hook inside Codex on first run instead.
+
+[features]
+hooks = true
+
+[hooks]
+bypass_hook_trust = true

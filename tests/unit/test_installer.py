@@ -1079,6 +1079,7 @@ class TestCli:
         below ``CLAUDE_MIN_VERSION`` is the practical trigger now that the
         version gate lives in ``ClaudeInstaller.detect``)."""
         monkeypatch.setattr("aiguard.claude.installer.detect_executable", lambda _: None)
+        monkeypatch.setattr("aiguard.codex.installer.detect_executable", lambda _: None)
         monkeypatch.setenv("DD_API_KEY", "k")
         monkeypatch.setenv("DD_APP_KEY", "a")
         monkeypatch.setenv("DD_SERVICE", "ai-guard")

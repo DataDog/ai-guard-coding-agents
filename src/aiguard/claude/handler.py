@@ -10,16 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from ddtrace import tracer
-from ddtrace.ext import user
 
-from aiguard import paths, utils
+from aiguard import paths
 from aiguard.claude import translate
 from aiguard.client import (
     AIGuardAbortError,
@@ -29,6 +26,7 @@ from aiguard.client import (
     new_ai_guard_client,
 )
 from aiguard.constants import AIGuardConstants
+from aiguard.hooks import common
 from aiguard.hooks.hooks import Handler
 
 logger = logging.getLogger("ai_guard")
@@ -36,19 +34,6 @@ logger = logging.getLogger("ai_guard")
 # CamelCase → snake_case for the dispatched method suffix
 # (``SessionStart`` → ``session_start``).
 _CAMEL_TO_SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
-
-# Sites where the UI lives at ``app.<site>``. Regional sites
-# (``us3.datadoghq.com``, ``us5.datadoghq.com``, ``ap1.datadoghq.com``, …) already
-# carry their subdomain and are reached at ``https://<site>`` directly — adding
-# ``app.`` breaks them.
-_APP_PREFIX_SITES = frozenset(
-    {
-        "datadoghq.com",
-        "datadoghq.eu",
-        "ddog-gov.com",
-        "datad0g.com",
-    }
-)
 
 
 class ClaudeHandler(Handler):
@@ -337,17 +322,9 @@ def _read_transcript(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def _ai_guard_ui_url(session_id: str) -> str | None:
-    if not session_id:
-        return None
-    site = os.environ.get("DD_SITE") or "datadoghq.com"
-    host = f"app.{site}" if site in _APP_PREFIX_SITES else site
-    query = urllib.parse.quote(
-        f"resource_name:ai_guard "
-        f"@{AIGuardConstants.CODING_AGENT_TAG}:* "
-        f"@{AIGuardConstants.SESSION_ID_TAG}:{session_id}"
-    )
-    return f"https://{host}/security/ai-guard/investigate?query={query}&group_by=session"
+# The investigate-link builder is agent-neutral and now lives in
+# ``aiguard.hooks.common``; keep the old name as an alias for callers/tests.
+_ai_guard_ui_url = common.ai_guard_ui_url
 
 
 def _fetch_email() -> str | None:
@@ -363,96 +340,25 @@ def _fetch_email() -> str | None:
 
 
 def _set_common_tags(event: dict[str, Any]) -> dict[str, Any]:
-    tags: dict[str, Any] = {
-        AIGuardConstants.CODING_AGENT_TAG: AIGuardConstants.CLAUDE_CODE,
-    }
-
-    if "model" in event:
-        tags[AIGuardConstants.MODEL_TAG] = event["model"]
-
-    email = _fetch_email()
-    if email:
-        tags[user.EMAIL] = email
-    user_id = utils.fetch_endpoint_id()
-    tags[user.ID] = user_id
-    tags[AIGuardConstants.USER_ID_TAG] = user_id
-    tags[AIGuardConstants.SESSION_ID_TAG] = event.get("session_id", "")
-    agent_id = event.get("agent_id", "")
-    if agent_id:
-        tags[AIGuardConstants.SUBAGENT_ID_TAG] = agent_id
-    agent_type = event.get("agent_type", "")
-    if agent_type:
-        tags[AIGuardConstants.SUBAGENT_TYPE_TAG] = agent_type
-
-    span = tracer.current_span()
-    if span:
-        for key, value in tags.items():
-            span.set_tag(key, value)
-
-    return tags
+    return common.set_common_tags(
+        event, coding_agent=AIGuardConstants.CLAUDE_CODE, email=_fetch_email()
+    )
 
 
 def _blocked_tool_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
-    event_name = event.get("hook_event_name", "")
-    tool_name = event.get("tool_name", "")
-    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
-    display_reason = "\x1b[1;31m🛡️ Datadog AI Guard\x1b[0m Blocked by security policy"
-
-    facts = [
-        f"Datadog AI Guard blocked the `{tool_name}` tool call.",
-        f"- Triggering reason: `{abort.reason}`",
-    ]
-    if abort.tag_probs:
-        ranked = sorted(abort.tag_probs.items(), key=lambda kv: kv[1], reverse=True)
-        top_tag, top_prob = ranked[0]
-        breakdown = ", ".join(f"`{tag}` ({prob * 100:.0f}%)" for tag, prob in ranked)
-        facts.append(f"- Most likely risk: `{top_tag}` at {top_prob * 100:.0f}% confidence")
-        facts.append(f"- Risk breakdown (highest first): {breakdown}")
-
-    if ui_url:
-        facts.append(f"- Investigate in Datadog: {ui_url}")
-
-    instructions = [
-        "",
-        "In your next reply, write a short user-facing message that:",
-        "1. States that Datadog AI Guard blocked the call to the tool above.",
-        "2. Names the most likely risk category and includes its confidence as a percentage, "
-        "also include other categories if they have high probabilities."
-        "3. Suggests sensible next steps (rephrase the request, review the input, inspect the "
-        "affected file, or contact the user's security team).",
-        "4. If a Datadog investigation link is provided above, include it in the response.",
-        "Do not retry the call automatically. Do not invent details beyond what is listed above.",
-    ]
-
-    parts = facts + instructions
-
-    if tool_name == "Skill":
+    # A blocked ``Skill`` load gets extra guidance: skills can carry malicious
+    # instructions, so the model should tell the user to remove and audit it.
+    extra_context: list[str] | None = None
+    if event.get("tool_name", "") == "Skill":
         skill_folder = _skill_folder(event)
         location = f" located at `{skill_folder}`" if skill_folder else ""
-        parts += [
+        extra_context = [
             "",
             f"The blocked call was a skill load{location}. Also tell the user to remove this skill "
             "and audit any other recently installed skills. Do not delete the skill yourself, and "
             "do not attempt to load it again in this session.",
         ]
-
-    model_context = "\n".join(parts)
-
-    hook_specific_output: dict = {
-        "hookEventName": event_name,
-        "additionalContext": model_context,
-    }
-    result: dict = {
-        "hookSpecificOutput": hook_specific_output,
-    }
-    if event_name == "PreToolUse":
-        hook_specific_output["permissionDecision"] = "deny"
-        hook_specific_output["permissionDecisionReason"] = display_reason
-    else:
-        result["decision"] = "block"
-        result["reason"] = display_reason
-
-    return result
+    return common.blocked_tool_response(event, abort, extra_context=extra_context)
 
 
 def _blocked_prompt_response(event: dict[str, Any], abort: AIGuardAbortError) -> dict[str, Any]:
@@ -479,7 +385,7 @@ def _blocked_prompt_response(event: dict[str, Any], abort: AIGuardAbortError) ->
         if len(high) > 1:
             lines.append(f"Other high-confidence risks: {', '.join(high[1:])}")
 
-    ui_url = _ai_guard_ui_url(event.get("session_id", ""))
+    ui_url = common.ai_guard_ui_url(event.get("session_id", ""))
     if ui_url:
         lines.append(f"Investigate in Datadog: {ui_url}")
 

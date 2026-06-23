@@ -7,7 +7,7 @@
 services:
   mitmproxy:
     image: mitmproxy/mitmproxy:12.2.3
-    command: mitmweb --web-host 0.0.0.0 --set web_password=ai_guard --set "view_filter=~u ai-guard | ~u api.anthropic.com"
+    command: mitmweb --web-host 0.0.0.0 --set web_password=ai_guard --set "view_filter=~u ai-guard | ~u api.anthropic.com | ~u api.openai.com"
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -29,6 +29,33 @@ services:
       - mitmproxy-data:/mitmproxy-certs:ro
       - ./docker/.ai_guard:/home/claude/.local/state/ai-guard
 
+  codex:
+    build:
+      dockerfile: docker/codex/Dockerfile
+    env_file:
+      - .env
+    environment:
+      # The HTTP client read the standard proxy env vars, but not every client honoured them historically
+      # (openai/codex#4242), so set the full upper/lower-case set to maximise coverage.
+      HTTP_PROXY: http://mitmproxy:8080
+      HTTPS_PROXY: http://mitmproxy:8080
+      ALL_PROXY: http://mitmproxy:8080
+      http_proxy: http://mitmproxy:8080
+      https_proxy: http://mitmproxy:8080
+      all_proxy: http://mitmproxy:8080
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+      CODEX_CA_CERTIFICATE: /tmp/ca-bundle.pem
+    depends_on:
+      - mitmproxy
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - codex-home:/home/codex
+      - mitmproxy-data:/mitmproxy-certs:ro
+      - ./docker/.ai_guard:/home/codex/.local/state/ai-guard
+
 volumes:
   mitmproxy-data:
   claude-home:
+  codex-home:

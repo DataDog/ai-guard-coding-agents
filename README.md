@@ -1,7 +1,7 @@
 # AI Guard for Coding Agents
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-ready-success?style=flat-square&logo=anthropic&logoColor=white)
-![Codex CLI](https://img.shields.io/badge/Codex_CLI-roadmap-lightgrey?style=flat-square&logo=https%3A%2F%2Fraw.githubusercontent.com%2FDataDog%2Fai-guard-coding-agents%2Fmain%2Fdocs%2Fimages%2Fopenai.svg)
+![Codex CLI](https://img.shields.io/badge/Codex_CLI-ready-success?style=flat-square&logo=https%3A%2F%2Fraw.githubusercontent.com%2FDataDog%2Fai-guard-coding-agents%2Fmain%2Fdocs%2Fimages%2Fopenai.svg)
 ![Cursor](https://img.shields.io/badge/Cursor-roadmap-lightgrey?style=flat-square&logo=cursor&logoColor=white)
 
 > [!IMPORTANT]
@@ -107,6 +107,7 @@ Every path the installer creates or modifies is listed below — nothing else on
 | `${XDG_CONFIG_HOME:-~/.config}/ai-guard/config.env`       | Persisted configuration values (mode `0600`).                 | `*`           |
 | OS keychain (`ai-guard` service)                          | `DD_API_KEY` / `DD_APP_KEY` via keychain when available.      | `*`           |
 | `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`           | Hook block under `hooks.*`.                                   | `Claude Code` |
+| `${CODEX_HOME:-~/.codex}/hooks.json`                      | Hook block under `hooks.*`.                                   | `Codex CLI`   |
 
 Paths follow the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) and honour
 `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` if set.
@@ -116,6 +117,12 @@ The hooks read their configuration (`DD_AI_GUARD_BLOCK`, site, log settings) fro
 application keys are credentials, so they are stored in the OS keychain (macOS Keychain, Linux Secret Service) via the
 [`keyring`](https://pypi.org/project/keyring/) library rather than in plaintext `config.env`. On a host with no usable
 keychain backend (e.g. headless Linux without gnome-keyring) the installer falls back to keeping them in `config.env`.
+
+> [!NOTE]
+> **Codex CLI** requires hooks (`PreToolUse` / `PostToolUse`) introduced in Codex `0.117.0`, so install against a
+> recent Codex. Codex also runs a command hook only after you **trust** it: the first time Codex loads the hook
+> block ai-guard wrote to `~/.codex/hooks.json`, it prompts you to review and approve it (and re-prompts if the hook
+> ever changes). Approve it once to activate the guardrail — the installer cannot pre-trust the hook for you.
 
 ### Uninstall
 
