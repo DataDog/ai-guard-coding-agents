@@ -7,7 +7,7 @@
 services:
   mitmproxy:
     image: mitmproxy/mitmproxy:12.2.3
-    command: mitmweb --web-host 0.0.0.0 --set web_password=ai_guard
+    command: mitmweb --web-host 0.0.0.0 --set web_password=ai_guard --set "view_filter=~u ai-guard | ~u api.anthropic.com | ~u api.openai.com"
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -48,6 +48,8 @@ services:
       CODEX_CA_CERTIFICATE: /tmp/ca-bundle.pem
     depends_on:
       - mitmproxy
+    security_opt:
+      - apparmor:unconfined
     volumes:
       - codex-home:/home/codex
       - mitmproxy-data:/mitmproxy-certs:ro

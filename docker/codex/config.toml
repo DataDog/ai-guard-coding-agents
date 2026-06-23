@@ -6,16 +6,6 @@
 # enable the hooks feature and bypass the trust gate here. Do NOT copy
 # bypass_hook_trust into a real workstation config — on a real machine, run
 # `ai-guard install` and approve the hook inside Codex on first run instead.
-#
-# Codex's bubblewrap sandbox can't create user namespaces inside Docker (bwrap:
-# "No permissions to create a new namespace", openai/codex#16211) because the
-# host restricts unprivileged userns and Docker's seccomp/apparmor block it. The
-# container is already the isolation boundary, so we disable Codex's inner
-# sandbox and approvals here. Do NOT do this on a real workstation — it gives
-# the agent full host access. (Alternative if you want the inner sandbox to run:
-# grant the container cap_add SYS_ADMIN + security_opt seccomp=unconfined.)
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
 
 [features]
 hooks = true

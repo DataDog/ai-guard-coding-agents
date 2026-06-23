@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf=2.71-3 \
     automake=1:1.16.5-1.3 \
     libtool=2.4.7-7~deb12u1 \
+    bubblewrap=0.8.0-2+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.14 /uv /usr/local/bin/uv
