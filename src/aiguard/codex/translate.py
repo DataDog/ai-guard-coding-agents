@@ -24,9 +24,15 @@ Translation table — Codex rollout entry → AI Guard message(s):
   response_item     custom_tool_call_output    tool {tool_call_id, content}
   response_item     reasoning                  dropped (AI Guard can't handle it)
   response_item     other                      dropped
-  session_meta      —                          dropped (metadata)
+  session_meta      base_instructions.text     prepended into the system message
   turn_context      —                          dropped (metadata)
   event_msg         —                          dropped (TUI mirror of the above)
+
+Two preamble-specific merges reassemble what Codex splits across items: the
+session-level ``base_instructions`` (the base system prompt) is folded into the
+``developer``-derived ``system`` message, and the injected ``<environment_context>``
+``user`` turn is merged with the user's first real prompt into one ``user``
+message with multiple content parts. Nothing else is coalesced.
 
   message.role      AI Guard role
   ────────────────  ─────────────────────────────────────────────────────────
@@ -65,11 +71,69 @@ _ROLE_MAP = {"developer": "system"}
 
 
 def transcript_to_messages(entries: list[dict[str, Any]]) -> list[Message]:
-    """Translate a sequence of rollout entries into AI Guard messages."""
+    """Translate a sequence of rollout entries into AI Guard messages.
+
+    See the module docstring for the two preamble-specific merges applied here
+    (base instructions → system; ``<environment_context>`` → first user prompt).
+    """
     messages: list[Message] = []
     for entry in entries:
         messages.extend(entry_to_messages(entry))
+
+    _fold_base_instructions(messages, _base_instructions(entries))
+    _merge_environment_context(messages)
     return messages
+
+
+def _base_instructions(entries: list[dict[str, Any]]) -> str | None:
+    """Return the ``base_instructions`` text from the first ``session_meta``."""
+    for entry in entries:
+        if entry.get("type") == "session_meta":
+            payload = entry.get("payload")
+            block = payload.get("base_instructions") if isinstance(payload, dict) else None
+            text = block.get("text") if isinstance(block, dict) else None
+            return text if isinstance(text, str) and text else None
+    return None
+
+
+def _fold_base_instructions(messages: list[Message], base_instructions: str | None) -> None:
+    """Prepend the base system prompt into the developer-derived system message."""
+    if not base_instructions:
+        return
+    part = ContentPart(type="text", text=base_instructions)
+    for message in messages:
+        if message.get("role") == "system":
+            message["content"] = [part] + _as_parts(message.get("content"))
+            return
+    messages.insert(0, Message(role="system", content=[part]))
+
+
+def _merge_environment_context(messages: list[Message]) -> None:
+    """Merge the injected ``<environment_context>`` user turn into the next prompt."""
+    for i in range(len(messages) - 1):
+        cur, nxt = messages[i], messages[i + 1]
+        if cur.get("role") == "user" and nxt.get("role") == "user" and _is_environment_context(cur):
+            cur["content"] = _as_parts(cur.get("content")) + _as_parts(nxt.get("content"))
+            del messages[i + 1]
+            return
+
+
+def _is_environment_context(message: Message) -> bool:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.lstrip().startswith("<environment_context>")
+    if isinstance(content, list) and content and isinstance(content[0], dict):
+        return content[0].get("text", "").lstrip().startswith("<environment_context>")
+    return False
+
+
+def _as_parts(content: Any) -> list[ContentPart]:
+    """Normalise a message's content to a list of content parts for merging."""
+    if isinstance(content, list):
+        return list(content)
+    if isinstance(content, str) and content:
+        return [ContentPart(type="text", text=content)]
+    return []
 
 
 def entry_to_messages(entry: dict[str, Any]) -> list[Message]:

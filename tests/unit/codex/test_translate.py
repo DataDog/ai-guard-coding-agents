@@ -106,6 +106,52 @@ class TestFunctionCalls:
         assert call["function"]["arguments"] == '{"command": ["ls"]}'
 
 
+class TestPreambleMerges:
+    def test_base_instructions_folded_into_system(self) -> None:
+        msgs = translate.transcript_to_messages(
+            [
+                codex_session_meta(base_instructions="You are Codex."),
+                codex_developer_message("permissions and skills"),
+            ]
+        )
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "system"
+        assert [p["text"] for p in msgs[0]["content"]] == [
+            "You are Codex.",
+            "permissions and skills",
+        ]
+
+    def test_base_instructions_without_developer_become_system(self) -> None:
+        msgs = translate.transcript_to_messages(
+            [codex_session_meta(base_instructions="You are Codex."), codex_user_message("hi")]
+        )
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == [{"type": "text", "text": "You are Codex."}]
+        assert msgs[1]["role"] == "user"
+
+    def test_environment_context_merged_with_prompt(self) -> None:
+        msgs = translate.transcript_to_messages(
+            [
+                codex_user_message("<environment_context>\n<cwd>/x</cwd>\n</environment_context>"),
+                codex_user_message("Build me a hello world application in WASM"),
+            ]
+        )
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert [p["text"] for p in msgs[0]["content"]] == [
+            "<environment_context>\n<cwd>/x</cwd>\n</environment_context>",
+            "Build me a hello world application in WASM",
+        ]
+
+    def test_unrelated_consecutive_users_not_merged(self) -> None:
+        # Only the environment_context turn is special-cased; other adjacent user
+        # messages are left as-is (no general coalescing).
+        msgs = translate.transcript_to_messages(
+            [codex_user_message("first"), codex_user_message("second")]
+        )
+        assert [m["content"][0]["text"] for m in msgs] == ["first", "second"]
+
+
 class TestDropped:
     def test_reasoning_dropped(self) -> None:
         assert translate.transcript_to_messages([codex_reasoning()]) == []

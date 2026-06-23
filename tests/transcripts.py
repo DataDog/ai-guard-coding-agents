@@ -101,9 +101,18 @@ class TranscriptWriter:
 # using the OpenAI Responses API item shape.
 
 
-def codex_session_meta(session_id: str = "sess-1") -> dict[str, Any]:
-    """A ``session_meta`` line (metadata; dropped by the translator)."""
-    return {"type": "session_meta", "payload": {"id": session_id, "cli_version": "0.140.0"}}
+def codex_session_meta(
+    session_id: str = "sess-1", base_instructions: str | None = None
+) -> dict[str, Any]:
+    """A ``session_meta`` line.
+
+    With ``base_instructions`` set, carries the base system prompt the translator
+    folds into the system message; otherwise it is metadata-only.
+    """
+    payload: dict[str, Any] = {"id": session_id, "cli_version": "0.140.0"}
+    if base_instructions is not None:
+        payload["base_instructions"] = {"text": base_instructions}
+    return {"type": "session_meta", "payload": payload}
 
 
 def codex_user_message(text: str) -> dict[str, Any]:

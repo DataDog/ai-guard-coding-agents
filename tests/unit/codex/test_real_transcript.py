@@ -30,13 +30,13 @@ def _messages():
 
 def test_fixture_parses_into_expected_role_sequence() -> None:
     entries, messages = _messages()
-    # 20 lines in the fixture; only response_items translate.
+    # 20 lines in the fixture; only response_items translate, and the two user
+    # preamble turns (environment_context + prompt) collapse into one.
     assert len(entries) == 20
     roles = [m["role"] for m in messages]
     assert roles == [
-        "system",  # developer permissions/skills block
-        "user",  # environment_context
-        "user",  # "Build me a hello world application in WASM"
+        "system",  # base_instructions + developer permissions/skills block
+        "user",  # environment_context + "Build me a hello world application in WASM"
         "assistant",  # "I'll inspect the workspace first"
         "assistant",  # function_call pwd
         "assistant",  # function_call rg --files
@@ -48,21 +48,23 @@ def test_fixture_parses_into_expected_role_sequence() -> None:
     ]
 
 
-def test_developer_block_becomes_system() -> None:
+def test_base_instructions_folded_into_system() -> None:
     _, messages = _messages()
     system = messages[0]
     assert system["role"] == "system"
-    # The developer turn carried three input_text parts → three text parts.
-    assert len(system["content"]) == 3
-    assert "sandbox_mode" in system["content"][0]["text"]
+    # base_instructions part first, then the three developer input_text parts.
+    assert len(system["content"]) == 4
+    assert system["content"][0]["text"].startswith("You are Codex")
+    assert "sandbox_mode" in system["content"][1]["text"]
 
 
-def test_user_prompt_present() -> None:
+def test_environment_context_merged_with_prompt() -> None:
     _, messages = _messages()
-    prompts = [m for m in messages if m["role"] == "user"]
-    assert any(
-        p["content"][0]["text"] == "Build me a hello world application in WASM" for p in prompts
-    )
+    users = [m for m in messages if m["role"] == "user"]
+    assert len(users) == 1
+    parts = [p["text"] for p in users[0]["content"]]
+    assert parts[0].startswith("<environment_context>")
+    assert parts[1] == "Build me a hello world application in WASM"
 
 
 def test_exec_commands_become_tool_calls_with_arguments_passthrough() -> None:
