@@ -104,3 +104,21 @@ def claude_config_dir() -> Path:
 
 def claude_settings_path() -> Path:
     return claude_config_dir() / "settings.json"
+
+
+def codex_config_dir() -> Path:
+    """Codex CLI's config directory (``$CODEX_HOME`` or ``~/.codex``)."""
+    override = os.environ.get("CODEX_HOME")
+    if not override:
+        # Lazy import: storage imports paths, so a module-level import cycles.
+        from aiguard import storage
+
+        override = storage.load_config().get("CODEX_HOME")
+    if override:
+        return Path(override).expanduser()
+    return home() / ".codex"
+
+
+def codex_hooks_path() -> Path:
+    """Codex CLI's ``hooks.json`` file (where ai-guard wires its hook block)."""
+    return codex_config_dir() / "hooks.json"

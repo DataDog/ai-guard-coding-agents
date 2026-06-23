@@ -28,13 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.transcripts import (
-    TranscriptWriter,
-    assistant_text,
-    assistant_tool_use,
-    tool_result,
-    user_text,
-)
 
 from aiguard.claude.handler import (
     ClaudeHandler,
@@ -49,6 +42,13 @@ from aiguard.claude.handler import (
 )
 from aiguard.client import AIGuardAbortError
 from aiguard.constants import AIGuardConstants
+from tests.transcripts import (
+    TranscriptWriter,
+    assistant_text,
+    assistant_tool_use,
+    tool_result,
+    user_text,
+)
 
 
 def _handler() -> ClaudeHandler:

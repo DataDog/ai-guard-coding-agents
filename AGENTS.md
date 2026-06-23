@@ -29,11 +29,17 @@ Real-time guardrails for coding agents. The CLI wires hooks into the agent's lif
 │   ├── paths.py                    # XDG path helpers (bundle, launcher, config.env, Claude settings dir)
 │   ├── utils.py                    # atomic_write, platform predicates, fetch_endpoint_id, detect_executable
 │   ├── hooks/
-│   │   └── hooks.py                # Handler ABC + `ai-guard hook` command (in-process dispatch to a Handler)
+│   │   ├── hooks.py                # Handler ABC + `ai-guard hook` command (in-process dispatch to a Handler)
+│   │   └── common.py               # Agent-neutral helpers shared by handlers: branded blocked-tool
+│   │                               #   payload, investigate-link builder, common span tags
 │   ├── claude/
 │   │   ├── handler.py              # ClaudeHandler(Handler): handle_hook dispatch, hook methods,
 │   │   │                           #   transcript → AI Guard messages, blocked-tool payloads
 │   │   └── installer.py            # ClaudeInstaller(AgentInstaller): merge/remove the hook block in settings.json
+│   ├── codex/
+│   │   ├── handler.py              # CodexHandler(Handler): hook dispatch + rollout → AI Guard messages
+│   │   ├── translate.py            # OpenAI Responses-API rollout items → AI Guard messages
+│   │   └── installer.py            # CodexInstaller(AgentInstaller): merge/remove the hook block in hooks.json
 │   └── installer/
 │       ├── installer.py            # `install` / `uninstall` Click commands + tiered field collection
 │       ├── agent.py                # AgentInstaller ABC + Field / Tier
@@ -47,6 +53,11 @@ Real-time guardrails for coding agents. The CLI wires hooks into the agent's lif
 ├── docker/claude/
 │   ├── Dockerfile                  # Multi-stage: PyInstaller binary + Claude Code runtime
 │   ├── claude-settings.json        # Wires every Claude Code hook to `ai-guard hook claude <Event>`
+│   └── entrypoint.sh               # Container entrypoint
+├── docker/codex/
+│   ├── Dockerfile                  # Multi-stage: PyInstaller binary + Codex CLI runtime
+│   ├── codex-hooks.json            # Wires every Codex hook to `ai-guard hook codex <Event>`
+│   ├── config.toml                 # Enables hooks + bypasses hook-trust for the headless container
 │   └── entrypoint.sh               # Container entrypoint
 ├── scripts/
 │   ├── install.sh                  # Bootstrap installer (download, verify, extract, hand off to `ai-guard install`)
@@ -131,6 +142,24 @@ Method names map 1:1 to the event names in `docker/claude/claude-settings.json`:
 | `PostToolUseFailure` | `_post_tool_use_failure` | Same shape as PostToolUse but uses `event.error` as the tool content. |
 | `UserPromptExpansion` | `_user_prompt_expansion` | Fires before a slash command / skill name expands into a prompt. Resolves the command/skill definition (`_fetch_command_expansion` → the `commands/<name>.md` file or the skill's `SKILL.md`) and injects it as a modelled `command`/`skill` tool call + result, so AI Guard sees what the expansion will inject. On abort returns `{"decision":"block","reason":…}` (the command is erased from context). |
 
+## Currently wired hooks (Codex)
+
+Codex CLI's hook contract mirrors Claude Code's (same `permissionDecision:"deny"` / `decision:"block"` /
+`reason` payloads), so `CodexHandler` reuses the shared shaping in `hooks/common.py`. Differences from Claude:
+the conversation is rebuilt from Codex's **rollout JSONL** (`$CODEX_HOME/sessions/.../rollout-*.jsonl`, OpenAI
+Responses-API items — see `codex/translate.py`); there is no skill tool, no slash-command expansion, and no
+subagent transcript file. Codex has no `SessionEnd` or `PostToolUseFailure` — `Stop` and a single `PostToolUse`
+(which fires on success *and* non-zero exit) cover them. Wired events: `SessionStart`, `SubagentStart`,
+`SubagentStop`, `Stop` (spans), `UserPromptSubmit` (deny), `PreToolUse` (deny), `PostToolUse` (block). Hooks need
+Codex `>= 0.117.0` and the user must **trust** the hook inside Codex on first run (the installer cannot pre-trust it).
+
+`UserPromptSubmit` is Codex's analog of Claude's `UserPromptExpansion` (Codex has no event by that name): it fires
+before every prompt reaches the model with a `prompt` field, and `CodexHandler._user_prompt_submit` evaluates that
+prompt plus, for explicit `$skill` / `/prompts:` references, the resolved definition (injected as a modelled tool
+call + result). **Skills caveat:** Codex loads an *auto-activated* skill's `SKILL.md` with no tool call and no hook
+event, so — unlike Claude's `Skill`-tool gate at `PreToolUse` — only explicitly-invoked (`$name`) skills are screened
+today; auto-activated skill instructions are not.
+
 ## Adding a new Claude Code hook
 
 1. Add a method `_<snake_case_hook_name>` on `ClaudeHandler`. Decorate with `@tracer.wrap(name=…, resource=AIGuardConstants.HOOK_RESOURCE)` if you want a span. Signature: `def _foo(self, event: dict[str, Any]) -> dict[str, Any] | None`.
@@ -196,13 +225,14 @@ CI (`.github/workflows/test.yml`) runs the source suite and a binary smoke test 
 
 ## Running locally with Docker Compose
 
-The `claude` container runs Claude Code with the ai-guard hooks pre-wired into `~/.claude/settings.json`; they evaluate in-process, so there's nothing else to start. A `mitmproxy` sidecar is an optional debugging HTTPS proxy (`HTTPS_PROXY`) that lets you watch Claude's calls to `api.anthropic.com` and ai-guard's AI Guard `/api/v2/ai-guard/evaluate` requests — it is not part of ai-guard.
+The `claude` and `codex` containers run their respective agents with the ai-guard hooks pre-wired (Claude into `~/.claude/settings.json`, Codex into `~/.codex/hooks.json`); they evaluate in-process, so there's nothing else to start. The Codex container also ships a `config.toml` that bypasses Codex's hook-trust gate, which is impossible to satisfy in a headless container (never do this on a real workstation). A `mitmproxy` sidecar is an optional debugging HTTPS proxy (`HTTPS_PROXY`) that lets you watch the agent's calls to `api.anthropic.com` / `api.openai.com` and ai-guard's AI Guard `/api/v2/ai-guard/evaluate` requests — it is not part of ai-guard.
 
 ```bash
 cp .env.example .env       # set DD_API_KEY, DD_APP_KEY (the hooks read these from the container env)
 docker compose build
 docker compose up -d
 docker exec -ti ai-guard-coding-agents-claude-1 claude
+docker exec -ti ai-guard-coding-agents-codex-1 codex
 ```
 
 mitmproxy UI: `http://localhost:8081` (password: `ai_guard`). The hook's log lands in `docker/.ai_guard/ai-guard.log` — the container's `$XDG_STATE_HOME/ai-guard` is bind-mounted there.

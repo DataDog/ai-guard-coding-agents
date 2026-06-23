@@ -25,10 +25,14 @@ class AIGuardConstants(object):
     PRE_TOOL = "pre-tool"
     POST_TOOL = "post-tool"
     USER_PROMPT_EXPANSION = "user-prompt-expansion"
+    USER_PROMPT_SUBMIT = "user-prompt-submit"
+    STOP = "stop"
 
     # CODING AGENTS
     CLAUDE_CODE = "claude_code"
     CLAUDE_MIN_VERSION = "2.1.139"
+    CODEX_CLI = "codex_cli"
+    CODEX_MIN_VERSION = "0.117.0"
 
     # Privacy mode — forwarded to the AI Guard client as its ``mode`` argument,
     # controlling what message content is surfaced in the UI. CODING_AGENT (our

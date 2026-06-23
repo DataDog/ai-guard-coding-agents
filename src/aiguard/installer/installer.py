@@ -13,6 +13,7 @@ from rich.text import Text
 
 from aiguard import keychain, paths, utils
 from aiguard.claude.installer import ClaudeInstaller
+from aiguard.codex.installer import CodexInstaller
 from aiguard.constants import AIGuardConstants
 from aiguard.installer import ui
 from aiguard.installer.agent import AgentInstaller, Field, Tier
@@ -21,7 +22,7 @@ from aiguard.storage import save_config
 
 logger = logging.getLogger("ai_guard")
 
-SUPPORTED_AGENTS: list[AgentInstaller] = [ClaudeInstaller()]
+SUPPORTED_AGENTS: list[AgentInstaller] = [ClaudeInstaller(), CodexInstaller()]
 
 FIELDS: list[Field] = [
     Field("DD_SITE", "Site", default="datadoghq.com", tier=Tier.REQUIRED),

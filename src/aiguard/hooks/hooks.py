@@ -47,6 +47,11 @@ def _build_handler(agent: str, block: bool) -> Handler | None:
 
         return ClaudeHandler(block)
 
+    if agent == "codex":
+        from aiguard.codex.handler import CodexHandler
+
+        return CodexHandler(block)
+
     return None
 
 
