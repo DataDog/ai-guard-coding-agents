@@ -163,6 +163,32 @@ def codex_function_call_output(call_id: str, output: str) -> dict[str, Any]:
     }
 
 
+def codex_custom_tool_call(call_id: str, name: str, tool_input: str) -> dict[str, Any]:
+    """A ``custom_tool_call`` response item (e.g. ``apply_patch``).
+
+    Unlike ``function_call``, the payload is a raw string in ``input`` (not a
+    JSON ``arguments`` string).
+    """
+    return {
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": name,
+            "input": tool_input,
+        },
+    }
+
+
+def codex_custom_tool_call_output(call_id: str, output: str) -> dict[str, Any]:
+    """A ``custom_tool_call_output`` response item."""
+    return {
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call_output", "call_id": call_id, "output": output},
+    }
+
+
 def codex_reasoning() -> dict[str, Any]:
     """A ``reasoning`` response item (dropped by the translator)."""
     return {

@@ -11,6 +11,8 @@ from __future__ import annotations
 from aiguard.codex import translate
 from tests.transcripts import (
     codex_assistant_message,
+    codex_custom_tool_call,
+    codex_custom_tool_call_output,
     codex_developer_message,
     codex_event_msg,
     codex_function_call,
@@ -71,6 +73,28 @@ class TestFunctionCalls:
     def test_function_call_output(self) -> None:
         msgs = translate.transcript_to_messages([codex_function_call_output("call_1", "done")])
         assert msgs == [{"role": "tool", "tool_call_id": "call_1", "content": "done"}]
+
+    def test_custom_tool_call_uses_input_as_arguments(self) -> None:
+        # apply_patch is a custom_tool_call: its payload lives in `input` (a raw
+        # string), not a JSON `arguments` string — pass it through unchanged.
+        patch = "*** Begin Patch\n*** Add File: x.txt\n+hi\n*** End Patch\n"
+        msgs = translate.transcript_to_messages(
+            [codex_custom_tool_call("call_9", "apply_patch", patch)]
+        )
+        assert msgs == [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_9", "function": {"name": "apply_patch", "arguments": patch}}
+                ],
+            }
+        ]
+
+    def test_custom_tool_call_output(self) -> None:
+        msgs = translate.transcript_to_messages(
+            [codex_custom_tool_call_output("call_9", "Success.")]
+        )
+        assert msgs == [{"role": "tool", "tool_call_id": "call_9", "content": "Success."}]
 
     def test_function_call_to_call_serialises_object_arguments(self) -> None:
         # The handler builds the pending PreToolUse call from a parsed object.

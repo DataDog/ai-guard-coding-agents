@@ -15,16 +15,18 @@ TUI and carry no extra signal, so they are dropped.
 
 Translation table — Codex rollout entry → AI Guard message(s):
 
-  entry.type        payload.type            AI Guard output
-  ────────────────  ──────────────────────  ──────────────────────────────────
-  response_item     message                 per-role message (rows below)
-  response_item     function_call           assistant {tool_calls:[…]}
-  response_item     function_call_output    tool {tool_call_id, content}
-  response_item     reasoning               dropped (AI Guard can't handle it)
-  response_item     other                   dropped
-  session_meta      —                       dropped (metadata)
-  turn_context      —                       dropped (metadata)
-  event_msg         —                       dropped (TUI mirror of the above)
+  entry.type        payload.type               AI Guard output
+  ────────────────  ─────────────────────────  ──────────────────────────────────
+  response_item     message                    per-role message (rows below)
+  response_item     function_call              assistant {tool_calls:[…]}
+  response_item     function_call_output       tool {tool_call_id, content}
+  response_item     custom_tool_call           assistant {tool_calls:[…]}  (apply_patch)
+  response_item     custom_tool_call_output    tool {tool_call_id, content}
+  response_item     reasoning                  dropped (AI Guard can't handle it)
+  response_item     other                      dropped
+  session_meta      —                          dropped (metadata)
+  turn_context      —                          dropped (metadata)
+  event_msg         —                          dropped (TUI mirror of the above)
 
   message.role      AI Guard role
   ────────────────  ─────────────────────────────────────────────────────────
@@ -40,6 +42,7 @@ Translation table — Codex rollout entry → AI Guard message(s):
   other / non-dict  anything                         part {type:text} block JSON
 
   function_call.arguments   already a JSON string    passed through verbatim
+  custom_tool_call.input    raw string (e.g. patch)  passed through as arguments
   function_call_output.output  str / other           str passed through; else JSON
 """
 
@@ -80,9 +83,12 @@ def entry_to_messages(entry: dict[str, Any]) -> list[Message]:
     item_type = payload.get("type")
     if item_type == "message":
         return _message_to_messages(payload)
-    if item_type == "function_call":
+    # ``function_call`` is the shell/MCP tool; ``custom_tool_call`` is how Codex
+    # records freeform tools like ``apply_patch`` (the file-edit tool) — both are
+    # assistant tool calls we must surface so AI Guard sees the action.
+    if item_type in ("function_call", "custom_tool_call"):
         return [Message(role="assistant", tool_calls=[function_call_to_call(payload)])]
-    if item_type == "function_call_output":
+    if item_type in ("function_call_output", "custom_tool_call_output"):
         return [
             Message(
                 role="tool",
@@ -109,13 +115,17 @@ def _message_to_messages(payload: dict[str, Any]) -> list[Message]:
 
 
 def function_call_to_call(payload: dict[str, Any]) -> ToolCall:
-    """Convert a Responses ``function_call`` item into an AI Guard tool call.
+    """Convert a Responses tool-call item into an AI Guard tool call.
 
     Unlike Anthropic ``tool_use`` blocks (whose ``input`` is an object we
-    serialise), Codex already stores ``arguments`` as a JSON string, so it is
-    passed through verbatim.
+    serialise), Codex already stores ``function_call`` ``arguments`` as a JSON
+    string, so it is passed through verbatim. ``custom_tool_call`` items (e.g.
+    ``apply_patch``) carry their payload in ``input`` instead — a raw string we
+    pass through unchanged so AI Guard sees the patch body.
     """
-    arguments = payload.get("arguments", "")
+    arguments = payload.get("arguments")
+    if arguments is None:
+        arguments = payload.get("input", "")
     if not isinstance(arguments, str):
         try:
             arguments = json.dumps(arguments, ensure_ascii=False)
